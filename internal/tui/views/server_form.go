@@ -37,8 +37,12 @@ type ServerFormModel struct {
 	originalServer *config.ServerConfig
 	originalName   string // Original name for edit mode (to detect rename)
 
+	// Available template names for the template selector
+	templateOptions []string
+
 	// Form field values
 	name              string
+	template          string // Selected template name (empty = none)
 	commandOrURL      string // Auto-detected: http(s):// = HTTP server, else = stdio command
 	args              string // Only used for stdio
 	cwd               string
@@ -53,6 +57,7 @@ type ServerFormModel struct {
 
 	// Initial values for dirty checking
 	initialName              string
+	initialTemplate          string
 	initialCommandOrURL      string
 	initialArgs              string
 	initialCwd               string
@@ -83,6 +88,12 @@ func NewServerForm(th theme.Theme) ServerFormModel {
 	}
 }
 
+// SetTemplateOptions sets the available template names for the template selector.
+// Must be called before ShowAdd/ShowEdit so the form includes the dropdown.
+func (m *ServerFormModel) SetTemplateOptions(names []string) {
+	m.templateOptions = names
+}
+
 // ShowAdd displays the form for adding a new server.
 // Returns a tea.Cmd to initialize the form.
 func (m *ServerFormModel) ShowAdd() tea.Cmd {
@@ -92,6 +103,7 @@ func (m *ServerFormModel) ShowAdd() tea.Cmd {
 	m.originalServer = nil
 	m.originalName = ""
 	m.name = ""
+	m.template = ""
 	m.commandOrURL = ""
 	m.args = ""
 	m.cwd = ""
@@ -105,6 +117,7 @@ func (m *ServerFormModel) ShowAdd() tea.Cmd {
 	m.toolTimeout = ""
 	// Save initial values for dirty checking
 	m.initialName = ""
+	m.initialTemplate = ""
 	m.initialCommandOrURL = ""
 	m.initialArgs = ""
 	m.initialCwd = ""
@@ -130,6 +143,7 @@ func (m *ServerFormModel) ShowAddWithDefaults(name, commandOrURL, args, env, bea
 	m.originalServer = nil
 	m.originalName = ""
 	m.name = name
+	m.template = ""
 	m.commandOrURL = commandOrURL
 	m.args = args
 	m.cwd = ""
@@ -143,6 +157,7 @@ func (m *ServerFormModel) ShowAddWithDefaults(name, commandOrURL, args, env, bea
 	m.toolTimeout = ""
 	// Save initial values for dirty checking (so form isn't dirty on open)
 	m.initialName = name
+	m.initialTemplate = ""
 	m.initialCommandOrURL = commandOrURL
 	m.initialArgs = args
 	m.initialCwd = ""
@@ -167,6 +182,7 @@ func (m *ServerFormModel) ShowEdit(name string, srv config.ServerConfig) tea.Cmd
 	m.originalServer = &srv // Preserve original for non-form fields
 	m.originalName = name   // Remember original name for rename detection
 	m.name = name
+	m.template = srv.Template
 
 	// Determine if this is an HTTP or stdio server and populate accordingly
 	if srv.URL != "" {
@@ -210,6 +226,7 @@ func (m *ServerFormModel) ShowEdit(name string, srv config.ServerConfig) tea.Cmd
 
 	// Save initial values for dirty checking
 	m.initialName = m.name
+	m.initialTemplate = m.template
 	m.initialCommandOrURL = m.commandOrURL
 	m.initialArgs = m.args
 	m.initialCwd = m.cwd
@@ -237,6 +254,9 @@ func (m *ServerFormModel) buildForm() {
 	// Add up/down arrow navigation to Confirm fields
 	keymap.Confirm.Prev.SetKeys("up", "shift+tab")
 	keymap.Confirm.Next.SetKeys("down", "tab")
+	// Add up/down arrow navigation to Select fields
+	keymap.Select.Prev.SetKeys("up", "shift+tab")
+	keymap.Select.Next.SetKeys("down", "tab")
 
 	// Custom theme with orange titles
 	formTheme := huh.ThemeBase16()
@@ -244,42 +264,72 @@ func (m *ServerFormModel) buildForm() {
 	formTheme.Focused.Title = formTheme.Focused.Title.Foreground(orange)
 	formTheme.Blurred.Title = formTheme.Blurred.Title.Foreground(orange)
 
+	// Build the main field group
+	var mainFields []huh.Field
+
+	mainFields = append(mainFields,
+		huh.NewInput().
+			Title("Name").
+			Description("Display name for the server").
+			Value(&m.name).
+			Validate(func(s string) error {
+				return nil // Name is optional
+			}),
+	)
+
+	// Add template selector when templates are available
+	if len(m.templateOptions) > 0 {
+		options := []huh.Option[string]{
+			huh.NewOption("(none)", ""),
+		}
+		for _, name := range m.templateOptions {
+			options = append(options, huh.NewOption(name, name))
+		}
+		mainFields = append(mainFields,
+			huh.NewSelect[string]().
+				Title("Template").
+				Description("Use a template as base config (overrides below are optional)").
+				Options(options...).
+				Value(&m.template),
+		)
+	}
+
+	mainFields = append(mainFields,
+		huh.NewInput().
+			Title("Command or URL").
+			Description("Command to run, or https:// URL for HTTP server").
+			Value(&m.commandOrURL).
+			Validate(func(s string) error {
+				// Allow empty when a template is selected
+				if strings.TrimSpace(s) == "" && m.template == "" {
+					return fmt.Errorf("required (or select a template)")
+				}
+				return nil
+			}),
+
+		huh.NewInput().
+			Title("Arguments").
+			Description("Space-separated args (appended to template args if set)").
+			Value(&m.args),
+
+		huh.NewInput().
+			Title("Working Directory").
+			Description("Directory to run the command in").
+			Value(&m.cwd),
+
+		huh.NewText().
+			Title("Environment Variables").
+			Description("One per line: KEY=value (merged with template env if set)").
+			Value(&m.env).
+			CharLimit(1000).
+			Lines(2),
+
+		huh.NewNote().
+			Description("↓ / Tab for advanced options (auth, timeouts)"),
+	)
+
 	m.form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Name").
-				Description("Display name for the server").
-				Value(&m.name).
-				Validate(func(s string) error {
-					return nil // Name is optional
-				}),
-
-			huh.NewInput().
-				Title("Command or URL").
-				Description("Command to run, or https:// URL for HTTP server").
-				Value(&m.commandOrURL).
-				Validate(huh.ValidateNotEmpty()),
-
-			huh.NewInput().
-				Title("Arguments").
-				Description("Space-separated args (for commands only)").
-				Value(&m.args),
-
-			huh.NewInput().
-				Title("Working Directory").
-				Description("Directory to run the command in").
-				Value(&m.cwd),
-
-			huh.NewText().
-				Title("Environment Variables").
-				Description("One per line: KEY=value").
-				Value(&m.env).
-				CharLimit(1000).
-				Lines(2),
-
-			huh.NewNote().
-				Description("↓ / Tab for advanced options (auth, timeouts)"),
-		),
+		huh.NewGroup(mainFields...),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Bearer Token Env Var").
@@ -356,6 +406,7 @@ func (m *ServerFormModel) buildForm() {
 // isDirty returns true if any form values have changed from their initial values.
 func (m *ServerFormModel) isDirty() bool {
 	return m.name != m.initialName ||
+		m.template != m.initialTemplate ||
 		m.commandOrURL != m.initialCommandOrURL ||
 		m.args != m.initialArgs ||
 		m.cwd != m.initialCwd ||
@@ -499,10 +550,20 @@ func (m ServerFormModel) buildServerConfig() config.ServerConfig {
 		srv = *m.originalServer
 	}
 
+	// Set template reference
+	srv.Template = strings.TrimSpace(m.template)
+
 	commandOrURL := strings.TrimSpace(m.commandOrURL)
 
-	// Auto-detect server type based on input
-	if isHTTPURL(commandOrURL) {
+	// When using a template with no command/URL override, only store override fields
+	if srv.Template != "" && commandOrURL == "" {
+		srv.Command = ""
+		srv.URL = ""
+		srv.Kind = ""
+		srv.Args = parseArgs(m.args)
+		srv.BearerTokenEnvVar = ""
+		srv.OAuth = nil
+	} else if isHTTPURL(commandOrURL) {
 		// HTTP server
 		srv.URL = commandOrURL
 		srv.Command = ""

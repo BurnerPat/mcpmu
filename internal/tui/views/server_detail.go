@@ -24,6 +24,7 @@ type ServerDetailModel struct {
 	tools          []mcp.Tool
 	toolTokens     map[string]int // toolName -> token count
 	toolsFromCache bool           // true when tools were loaded from cache
+	disabledTools  map[string]bool // tools disabled by template
 	viewport       viewport.Model
 	width          int
 	height         int
@@ -48,6 +49,16 @@ func (m *ServerDetailModel) SetServer(name string, srv *config.ServerConfig, sta
 	m.tools = tools
 	m.toolTokens = toolTokens
 	m.toolsFromCache = toolsFromCache
+	m.disabledTools = nil
+	m.updateContent()
+}
+
+// SetDisabledTools sets the tools that are disabled by the server's template.
+func (m *ServerDetailModel) SetDisabledTools(disabled []string) {
+	m.disabledTools = make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		m.disabledTools[name] = true
+	}
 	m.updateContent()
 }
 
@@ -110,6 +121,13 @@ func (m *ServerDetailModel) updateContent() {
 		content.WriteString(infoStyle.Render(formatDuration(uptime)))
 	}
 	content.WriteString("\n\n")
+
+	// Template reference
+	if m.server.Template != "" {
+		content.WriteString(labelStyle.Render("Template: "))
+		content.WriteString(m.theme.Primary.Render(m.server.Template))
+		content.WriteString("\n")
+	}
 
 	// Server type-specific fields
 	if m.server.IsHTTP() {
@@ -178,10 +196,19 @@ func (m *ServerDetailModel) updateContent() {
 			if i > 0 {
 				toolsContent.WriteString("\n")
 			}
-			toolsContent.WriteString(m.theme.Primary.Render(tool.Name))
-			if tokens, ok := m.toolTokens[tool.Name]; ok {
+
+			// Check if tool is disabled by template
+			isDisabled := m.disabledTools[tool.Name]
+			if isDisabled {
+				toolsContent.WriteString(m.theme.Faint.Render("✗ " + tool.Name))
 				toolsContent.WriteString("  ")
-				toolsContent.WriteString(m.theme.Faint.Render(fmt.Sprintf("~%d tokens", tokens)))
+				toolsContent.WriteString(m.theme.Faint.Render("(disabled by template)"))
+			} else {
+				toolsContent.WriteString(m.theme.Primary.Render(tool.Name))
+				if tokens, ok := m.toolTokens[tool.Name]; ok {
+					toolsContent.WriteString("  ")
+					toolsContent.WriteString(m.theme.Faint.Render(fmt.Sprintf("~%d tokens", tokens)))
+				}
 			}
 			if tool.Description != "" {
 				toolsContent.WriteString("\n  ")
@@ -189,7 +216,11 @@ func (m *ServerDetailModel) updateContent() {
 				if len(desc) > 60 {
 					desc = desc[:57] + "..."
 				}
-				toolsContent.WriteString(m.theme.Muted.Render(desc))
+				if isDisabled {
+					toolsContent.WriteString(m.theme.Faint.Render(desc))
+				} else {
+					toolsContent.WriteString(m.theme.Muted.Render(desc))
+				}
 			}
 		}
 		content.WriteString(toolBox.Render(toolsContent.String()))

@@ -63,8 +63,13 @@ func (r *Router) CallTool(ctx context.Context, qualifiedName string, arguments j
 		}
 	}
 
-	// Validate server exists
-	srv, ok := r.cfg.GetServer(serverName)
+	// Check if tool is disabled by template
+	if r.cfg.IsToolDisabledByTemplate(serverName, toolName) {
+		return nil, ErrToolDenied(qualifiedName, "tool is disabled by the server template")
+	}
+
+	// Validate server exists and resolve template
+	srv, ok := r.cfg.ResolveServer(serverName)
 	if !ok {
 		return nil, ErrServerNotFound(serverName)
 	}
@@ -143,12 +148,14 @@ func (r *Router) handleManagerTool(ctx context.Context, toolName string, argumen
 func (r *Router) handleServersList(ctx context.Context) (*ToolCallResult, *RPCError) {
 	servers := make([]ServerInfo, 0, len(r.cfg.Servers))
 	for name, srv := range r.cfg.Servers {
+		resolved, _ := r.cfg.ResolveServer(name)
 		info := ServerInfo{
-			ID:      name, // Use name as ID for backwards compatibility in output
-			Name:    name,
-			Kind:    string(srv.GetKind()),
-			Enabled: srv.IsEnabled(),
-			Command: srv.Command,
+			ID:       name,
+			Name:     name,
+			Kind:     string(resolved.GetKind()),
+			Enabled:  srv.IsEnabled(),
+			Command:  resolved.Command,
+			Template: srv.Template,
 		}
 
 		// Check if running
@@ -178,7 +185,7 @@ func (r *Router) handleServersStart(ctx context.Context, arguments json.RawMessa
 	}
 
 	serverName := args.ServerID // server_id now means server name
-	srv, ok := r.cfg.GetServer(serverName)
+	srv, ok := r.cfg.ResolveServer(serverName)
 	if !ok {
 		return nil, ErrServerNotFound(serverName)
 	}
@@ -246,7 +253,7 @@ func (r *Router) handleServersRestart(ctx context.Context, arguments json.RawMes
 	}
 
 	serverName := args.ServerID
-	srv, ok := r.cfg.GetServer(serverName)
+	srv, ok := r.cfg.ResolveServer(serverName)
 	if !ok {
 		return nil, ErrServerNotFound(serverName)
 	}
@@ -351,6 +358,7 @@ type ServerInfo struct {
 	Kind      string `json:"kind"`
 	Enabled   bool   `json:"enabled"`
 	Command   string `json:"command,omitempty"`
+	Template  string `json:"template,omitempty"`
 	Status    string `json:"status"`
 	PID       int    `json:"pid,omitempty"`
 	Uptime    string `json:"uptime,omitempty"`

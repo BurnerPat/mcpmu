@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -62,6 +63,9 @@ func LoadFrom(path string) (*Config, error) {
 	}
 
 	// Initialize maps if nil (for older configs)
+	if cfg.Templates == nil {
+		cfg.Templates = make(map[string]TemplateConfig)
+	}
 	if cfg.Servers == nil {
 		cfg.Servers = make(map[string]ServerConfig)
 	}
@@ -260,6 +264,106 @@ func removeString(slice []string, s string) []string {
 		}
 	}
 	return result
+}
+
+// ============================================================================
+// Template CRUD
+// ============================================================================
+
+// AddTemplate adds a new template to the config with the given name.
+// Returns an error if a template with that name already exists.
+func (c *Config) AddTemplate(name string, tmpl TemplateConfig) error {
+	if err := ValidateName(name); err != nil {
+		return fmt.Errorf("invalid name: %w", err)
+	}
+	if err := tmpl.Validate(); err != nil {
+		return fmt.Errorf("invalid template config: %w", err)
+	}
+	if c.Templates == nil {
+		c.Templates = make(map[string]TemplateConfig)
+	}
+	if _, exists := c.Templates[name]; exists {
+		return fmt.Errorf("template %q already exists", name)
+	}
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// UpdateTemplate updates an existing template configuration.
+func (c *Config) UpdateTemplate(name string, tmpl TemplateConfig) error {
+	if _, exists := c.Templates[name]; !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	if err := tmpl.Validate(); err != nil {
+		return fmt.Errorf("invalid template config: %w", err)
+	}
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// DeleteTemplate removes a template from the config by name.
+// Returns an error if any servers still reference this template.
+func (c *Config) DeleteTemplate(name string) error {
+	if _, exists := c.Templates[name]; !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	// Check for servers referencing this template
+	for srvName, srv := range c.Servers {
+		if srv.Template == name {
+			return fmt.Errorf("cannot delete template %q: server %q references it", name, srvName)
+		}
+	}
+	delete(c.Templates, name)
+	return nil
+}
+
+// RenameTemplate renames a template, updating all server references.
+func (c *Config) RenameTemplate(oldName, newName string) error {
+	tmpl, exists := c.Templates[oldName]
+	if !exists {
+		return fmt.Errorf("template %q not found", oldName)
+	}
+	if _, exists := c.Templates[newName]; exists {
+		return fmt.Errorf("template %q already exists", newName)
+	}
+	if err := ValidateName(newName); err != nil {
+		return fmt.Errorf("invalid name: %w", err)
+	}
+
+	delete(c.Templates, oldName)
+	c.Templates[newName] = tmpl
+
+	// Update server references
+	for srvName, srv := range c.Servers {
+		if srv.Template == oldName {
+			srv.Template = newName
+			c.Servers[srvName] = srv
+		}
+	}
+	return nil
+}
+
+// SetTemplateDisabledTools updates the disabled tools list for a template.
+func (c *Config) SetTemplateDisabledTools(name string, disabledTools []string) error {
+	tmpl, exists := c.Templates[name]
+	if !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	tmpl.DisabledTools = disabledTools
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// ServersUsingTemplate returns the names of servers that reference the given template.
+func (c *Config) ServersUsingTemplate(templateName string) []string {
+	var names []string
+	for name, srv := range c.Servers {
+		if srv.Template == templateName {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // AddNamespace adds a new namespace to the config with the given name.

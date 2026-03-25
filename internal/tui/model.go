@@ -29,6 +29,8 @@ type Tab int
 const (
 	TabServers Tab = iota
 	TabNamespaces
+	TabTemplates
+	tabCount = 3
 )
 
 // View represents the current view mode.
@@ -71,6 +73,12 @@ type Model struct {
 	toolPerms       views.ToolPermissionsModel
 	registryBrowser views.RegistryBrowserModel
 
+	// Template Components
+	templateList   views.TemplateListModel
+	templateDetail views.TemplateDetailModel
+	templateForm   *views.TemplateFormModel
+	templatePerms  views.TemplateToolPermissionsModel
+
 	// Shared Components
 	logPanel    views.LogPanelModel
 	helpOverlay views.HelpOverlayModel
@@ -85,6 +93,7 @@ type Model struct {
 	// Detail view tracking
 	detailServerID    string
 	detailNamespaceID string
+	detailTemplateID  string
 
 	// Confirm dialog state (legacy, for quit confirmation)
 	showConfirm    bool
@@ -120,6 +129,12 @@ func newNamespaceFormPtr(th theme.Theme) *views.NamespaceFormModel {
 	return &form
 }
 
+// newTemplateFormPtr creates a pointer to a TemplateFormModel.
+func newTemplateFormPtr(th theme.Theme) *views.TemplateFormModel {
+	form := views.NewTemplateForm(th)
+	return &form
+}
+
 // NewModel creates a new root model.
 func NewModel(cfg *config.Config, supervisor *process.Supervisor, bus *events.Bus, configPath string, toolCache *config.ToolCache) Model {
 	th := theme.New()
@@ -146,6 +161,10 @@ func NewModel(cfg *config.Config, supervisor *process.Supervisor, bus *events.Bu
 		serverPicker:    views.NewServerPicker(th),
 		toolPerms:       views.NewToolPermissions(th),
 		registryBrowser: views.NewRegistryBrowser(th),
+		templateList:    views.NewTemplateList(th),
+		templateDetail:  views.NewTemplateDetail(th),
+		templateForm:    newTemplateFormPtr(th),
+		templatePerms:   views.NewTemplateToolPermissions(th),
 		logPanel:        views.NewLogPanel(th),
 		helpOverlay:     views.NewHelpOverlay(th),
 		confirmDlg:      views.NewConfirm(th),
@@ -168,6 +187,7 @@ func NewModel(cfg *config.Config, supervisor *process.Supervisor, bus *events.Bu
 	// Initialize lists from config
 	m.refreshServerList()
 	m.refreshNamespaceList()
+	m.refreshTemplateList()
 
 	return m
 }
@@ -185,6 +205,7 @@ func (m *Model) switchToTab(tab Tab) {
 	m.currentView = ViewList
 	m.detailServerID = ""
 	m.detailNamespaceID = ""
+	m.detailTemplateID = ""
 
 	// Refresh tab-specific lists when switching.
 	switch tab {
@@ -192,6 +213,8 @@ func (m *Model) switchToTab(tab Tab) {
 		m.refreshServerList()
 	case TabNamespaces:
 		m.refreshNamespaceList()
+	case TabTemplates:
+		m.refreshTemplateList()
 	}
 }
 
@@ -202,6 +225,8 @@ func (m *Model) applyFocus() {
 	m.serverDetail.SetFocused(false)
 	m.namespaceList.SetFocused(false)
 	m.namespaceDetail.SetFocused(false)
+	m.templateList.SetFocused(false)
+	m.templateDetail.SetFocused(false)
 
 	switch m.activeTab {
 	case TabServers:
@@ -215,6 +240,12 @@ func (m *Model) applyFocus() {
 			m.namespaceDetail.SetFocused(true)
 		} else {
 			m.namespaceList.SetFocused(true)
+		}
+	case TabTemplates:
+		if m.currentView == ViewDetail {
+			m.templateDetail.SetFocused(true)
+		} else {
+			m.templateList.SetFocused(true)
 		}
 	}
 }
@@ -234,12 +265,17 @@ func (m Model) startAutostartServers() tea.Cmd {
 		for _, entry := range m.cfg.ServerEntries() {
 			if entry.Config.Autostart && entry.Config.IsEnabled() {
 				log.Printf("Autostarting server: %s", entry.Name)
-				go func(name string, s config.ServerConfig) {
-					_, err := m.supervisor.Start(m.ctx, name, s)
+				go func(name string) {
+					resolved, ok := m.cfg.ResolveServer(name)
+					if !ok {
+						log.Printf("Failed to resolve server %s for autostart", name)
+						return
+					}
+					_, err := m.supervisor.Start(m.ctx, name, resolved)
 					if err != nil {
 						log.Printf("Failed to autostart server %s: %v", name, err)
 					}
-				}(entry.Name, entry.Config)
+				}(entry.Name)
 			}
 		}
 		return nil
@@ -268,6 +304,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateWithNamespaceForm(msg)
 	}
 
+	// Template form
+	if m.templateForm.IsVisible() {
+		return m.updateWithTemplateForm(msg)
+	}
+
 	// Server picker modal
 	if m.serverPicker.IsVisible() {
 		return m.updateWithServerPicker(msg)
@@ -276,6 +317,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Tool permissions modal
 	if m.toolPerms.IsVisible() {
 		return m.updateWithToolPerms(msg)
+	}
+
+	// Template tool permissions modal
+	if m.templatePerms.IsVisible() {
+		return m.updateWithTemplatePerms(msg)
 	}
 
 	// Add method selector modal
@@ -295,6 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if spec.CommandOrURL == "" {
 			return m, m.toast.ShowError("Server has no installable packages")
 		}
+		m.serverForm.SetTemplateOptions(m.templateNames())
 		cmd := m.serverForm.ShowAddWithDefaults(spec.Name, spec.CommandOrURL, spec.Args, formatEnvMap(spec.Env), spec.BearerTokenEnvVar, "", "", "")
 		return m, cmd
 	}
@@ -361,11 +408,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ToolPermissionsResult:
 		return m.handleToolPermissionsResult(msg)
 
+	case views.TemplateFormResult:
+		return m.handleTemplateFormResult(msg)
+
+	case views.TemplateToolPermissionsResult:
+		return m.handleTemplateToolPermissionsResult(msg)
+
 	case views.AddMethodResult:
 		m.addMethod.Hide()
 		if msg.Submitted {
 			switch msg.Method {
 			case "manual":
+				m.serverForm.SetTemplateOptions(m.templateNames())
 				return m, m.serverForm.ShowAdd()
 			case "registry":
 				m.registryBrowser.Show()
@@ -442,6 +496,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			var cmd tea.Cmd
 			m.namespaceDetail, cmd = m.namespaceDetail.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+	case TabTemplates:
+		if m.currentView == ViewList {
+			var cmd tea.Cmd
+			m.templateList, cmd = m.templateList.Update(msg)
+			cmds = append(cmds, cmd)
+		} else {
+			var cmd tea.Cmd
+			m.templateDetail, cmd = m.templateDetail.Update(msg)
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -533,12 +597,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (handled bool, model tea.Model, cmd te
 		return true, m, tea.Quit
 
 	case key.Matches(msg, m.keys.TabNext):
-		next := Tab((int(m.activeTab) + 1) % 2)
+		next := Tab((int(m.activeTab) + 1) % tabCount)
 		m.switchToTab(next)
 		return true, m, nil
 
 	case key.Matches(msg, m.keys.TabPrev):
-		prev := Tab((int(m.activeTab) + 1) % 2) // -1 mod 2
+		prev := Tab((int(m.activeTab) + tabCount - 1) % tabCount)
 		m.switchToTab(prev)
 		return true, m, nil
 
@@ -550,11 +614,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (handled bool, model tea.Model, cmd te
 		m.switchToTab(TabNamespaces)
 		return true, m, nil
 
+	case key.Matches(msg, m.keys.Tab3):
+		m.switchToTab(TabTemplates)
+		return true, m, nil
+
 	case key.Matches(msg, m.keys.Escape):
 		if m.currentView == ViewDetail {
 			m.currentView = ViewList
 			m.detailServerID = ""
 			m.detailNamespaceID = ""
+			m.detailTemplateID = ""
 			return true, m, nil
 		}
 		if m.logPanel.IsFocused() {
@@ -608,6 +677,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (handled bool, model tea.Model, cmd te
 		if m.currentView == ViewDetail {
 			return m.handleNamespaceDetailKey(msg)
 		}
+	case TabTemplates:
+		if m.currentView == ViewList {
+			return m.handleTemplateListKey(msg)
+		}
+		if m.currentView == ViewDetail {
+			return m.handleTemplateDetailKey(msg)
+		}
 	}
 
 	return false, m, nil
@@ -622,6 +698,7 @@ func (m *Model) handleServerListKey(msg tea.KeyMsg) (handled bool, model tea.Mod
 			status := m.serverStatuses[item.Name]
 			tools, toolTokens, fromCache := m.getServerToolsForDetail(item.Name)
 			m.serverDetail.SetServer(item.Name, &item.Config, &status, tools, toolTokens, fromCache)
+			m.serverDetail.SetDisabledTools(m.cfg.GetDisabledToolsForServer(item.Name))
 		}
 		return true, m, nil
 
@@ -651,6 +728,7 @@ func (m *Model) handleServerListKey(msg tea.KeyMsg) (handled bool, model tea.Mod
 
 	case key.Matches(msg, m.keys.Edit):
 		if item := m.serverList.SelectedItem(); item != nil {
+			m.serverForm.SetTemplateOptions(m.templateNames())
 			cmd := m.serverForm.ShowEdit(item.Name, item.Config)
 			return true, m, cmd
 		}
@@ -902,14 +980,43 @@ func (m Model) handleConfirmResult(result views.ConfirmResult) (tea.Model, tea.C
 		return m, m.toast.ShowSuccess(fmt.Sprintf("Namespace \"%s\" deleted", namespaceName))
 	}
 
+	if result.Tag == "delete-template" && result.Confirmed {
+		templateName := m.pendingDeleteID
+
+		if err := m.cfg.DeleteTemplate(m.pendingDeleteID); err != nil {
+			log.Printf("Failed to delete template: %v", err)
+			m.pendingDeleteID = ""
+			return m, m.toast.ShowError(fmt.Sprintf("Failed to delete template: %v", err))
+		}
+
+		if err := m.saveConfig(); err != nil {
+			log.Printf("Failed to save config: %v", err)
+			m.pendingDeleteID = ""
+			return m, m.toast.ShowError(fmt.Sprintf("Failed to save config: %v", err))
+		}
+
+		m.refreshTemplateList()
+		if m.detailTemplateID == m.pendingDeleteID {
+			m.currentView = ViewList
+			m.detailTemplateID = ""
+		}
+		m.pendingDeleteID = ""
+		return m, m.toast.ShowSuccess(fmt.Sprintf("Template \"%s\" deleted", templateName))
+	}
+
 	m.pendingDeleteID = ""
 	m.pendingDeleteNamespaceID = ""
 	return m, nil
 }
 
 func (m *Model) startServer(name string, srv config.ServerConfig) {
+	// Resolve template if needed
+	resolved, ok := m.cfg.ResolveServer(name)
+	if !ok {
+		resolved = srv
+	}
 	// Error will be emitted via event bus, no need to handle here
-	_, _ = m.supervisor.Start(m.ctx, name, srv)
+	_, _ = m.supervisor.Start(m.ctx, name, resolved)
 }
 
 func (m *Model) loginOAuth(name string) {
@@ -1020,6 +1127,7 @@ func (m *Model) refreshDetailViewIfShowing(serverID string) {
 	status := m.serverStatuses[serverID]
 	tools, toolTokens, fromCache := m.getServerToolsForDetail(serverID)
 	m.serverDetail.SetServer(serverID, &srv, &status, tools, toolTokens, fromCache)
+	m.serverDetail.SetDisabledTools(m.cfg.GetDisabledToolsForServer(serverID))
 }
 
 func (m *Model) convertTools(mcpTools []events.McpTool) []mcp.Tool {
@@ -1058,9 +1166,14 @@ func (m *Model) updateLayout() {
 	m.namespaceList.SetSize(contentWidth, contentHeight)
 	m.namespaceDetail.SetSize(contentWidth, contentHeight)
 
+	// Set component sizes - templates
+	m.templateList.SetSize(contentWidth, contentHeight)
+	m.templateDetail.SetSize(contentWidth, contentHeight)
+
 	// Modal/overlay sizes
 	m.serverPicker.SetSize(m.width, m.height)
 	m.toolPerms.SetSize(m.width, m.height)
+	m.templatePerms.SetSize(m.width, m.height)
 	m.addMethod.SetSize(m.width, m.height)
 	m.registryBrowser.SetSize(m.width, m.height)
 
@@ -1095,6 +1208,12 @@ func (m Model) View() string {
 			sections = append(sections, m.namespaceList.View())
 		} else {
 			sections = append(sections, m.namespaceDetail.View())
+		}
+	case TabTemplates:
+		if m.currentView == ViewList {
+			sections = append(sections, m.templateList.View())
+		} else {
+			sections = append(sections, m.templateDetail.View())
 		}
 	default:
 		sections = append(sections, m.serverList.View())
@@ -1136,6 +1255,16 @@ func (m Model) View() string {
 		content = m.toolPerms.RenderOverlay(content, m.width, m.height)
 	}
 
+	// Template form overlay
+	if m.templateForm.IsVisible() {
+		content = m.templateForm.RenderOverlay(content, m.width, m.height)
+	}
+
+	// Template tool permissions overlay
+	if m.templatePerms.IsVisible() {
+		content = m.templatePerms.RenderOverlay(content, m.width, m.height)
+	}
+
 	// Add method selector overlay
 	if m.addMethod.IsVisible() {
 		content = m.addMethod.RenderOverlay(content, m.width, m.height)
@@ -1166,6 +1295,7 @@ func (m Model) renderHeader() string {
 	}{
 		{"Servers", true},
 		{"Namespaces", true},
+		{"Templates", true},
 	}
 
 	var tabViews []string
@@ -1227,6 +1357,12 @@ func (m Model) renderStatusBar() string {
 			keys = "a:add  e:edit  c:copy  d:delete  D:set-default  ?:help"
 		} else {
 			keys = "esc:back  s:assign-servers  p:permissions  D:set-default  e:edit  ?:help"
+		}
+	case TabTemplates:
+		if m.currentView == ViewList {
+			keys = "enter:view  a:add  e:edit  d:delete  ?:help"
+		} else {
+			keys = "esc:back  t:test  p:tool-filter  e:edit  ?:help"
 		}
 	default:
 		keys = "?:help"
@@ -1342,6 +1478,7 @@ func (m Model) updateWithAddMethod(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Submitted {
 			switch msg.Method {
 			case "manual":
+				m.serverForm.SetTemplateOptions(m.templateNames())
 				return m, m.serverForm.ShowAdd()
 			case "registry":
 				m.registryBrowser.Show()
@@ -1697,8 +1834,12 @@ func (m *Model) startToolPermissionEditor(nsName string, ns *config.NamespaceCon
 				serverTools[serverName] = tools
 			}
 		} else if !hasStatus || status.State == events.StateStopped || status.State == events.StateIdle {
-			// Not running - need to start
-			serversToStart = append(serversToStart, serverToStart{name: serverName, config: srv})
+			// Not running - need to start (resolve template)
+			resolved, rok := m.cfg.ResolveServer(serverName)
+			if !rok {
+				resolved = srv
+			}
+			serversToStart = append(serversToStart, serverToStart{name: serverName, config: resolved})
 			autoStartedIDs = append(autoStartedIDs, serverName)
 		}
 	}
@@ -2100,4 +2241,292 @@ func (m *Model) getServerToolsForDetail(serverID string) (tools []mcp.Tool, tool
 	}
 
 	return nil, toolTokens, false
+}
+
+// ============================================================================
+// Template key handlers and helpers
+// ============================================================================
+
+func (m *Model) refreshTemplateList() {
+	entries := m.cfg.TemplateEntries()
+	items := make([]views.TemplateItem, len(entries))
+	for i, entry := range entries {
+		usedBy := m.cfg.ServersUsingTemplate(entry.Name)
+		items[i] = views.TemplateItem{
+			Name:          entry.Name,
+			Config:        entry.Config,
+			UsedByServers: usedBy,
+			DisabledCount: len(entry.Config.DisabledTools),
+		}
+	}
+	m.templateList.SetItems(items)
+}
+
+// templateNames returns sorted template names for use in the server form selector.
+func (m *Model) templateNames() []string {
+	entries := m.cfg.TemplateEntries()
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names
+}
+
+func (m *Model) handleTemplateListKey(msg tea.KeyMsg) (handled bool, model tea.Model, cmd tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Enter):
+		if item := m.templateList.SelectedItem(); item != nil {
+			m.currentView = ViewDetail
+			m.detailTemplateID = item.Name
+			m.templateDetail.SetTemplate(item.Name, &item.Config, m.cfg.ServersUsingTemplate(item.Name))
+		}
+		return true, m, nil
+
+	case key.Matches(msg, m.keys.Add):
+		cmd := m.templateForm.ShowAdd()
+		return true, m, cmd
+
+	case key.Matches(msg, m.keys.Edit):
+		if item := m.templateList.SelectedItem(); item != nil {
+			cmd := m.templateForm.ShowEdit(item.Name, item.Config)
+			return true, m, cmd
+		}
+		return true, m, nil
+
+	case key.Matches(msg, m.keys.Delete):
+		if item := m.templateList.SelectedItem(); item != nil {
+			usedBy := m.cfg.ServersUsingTemplate(item.Name)
+			if len(usedBy) > 0 {
+				return true, m, m.toast.ShowError(fmt.Sprintf("Template in use by %d server(s). Remove references first.", len(usedBy)))
+			}
+			m.pendingDeleteID = item.Name
+			m.confirmDlg.Show("Delete Template", fmt.Sprintf("Delete template \"%s\"?\nThis cannot be undone.", item.Name), "delete-template")
+		}
+		return true, m, nil
+	}
+	return false, m, nil
+}
+
+func (m *Model) handleTemplateDetailKey(msg tea.KeyMsg) (handled bool, model tea.Model, cmd tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Test):
+		// Test the template by starting a temporary server
+		if m.detailTemplateID != "" {
+			tmpl, ok := m.cfg.GetTemplate(m.detailTemplateID)
+			if !ok {
+				return true, m, m.toast.ShowError("Template not found")
+			}
+			// Start a temporary test using the template's base config
+			testSrv := tmpl.ToServerConfig()
+			go m.startServer(m.detailTemplateID+"__test", testSrv)
+			return true, m, m.toast.ShowInfo(fmt.Sprintf("Testing template \"%s\"...", m.detailTemplateID))
+		}
+		return true, m, nil
+
+	case msg.String() == "p": // Edit tool filter (disabled tools)
+		if m.detailTemplateID != "" {
+			tmpl, ok := m.cfg.GetTemplate(m.detailTemplateID)
+			if !ok {
+				return true, m, m.toast.ShowError("Template not found")
+			}
+			return m.startTemplateToolEditor(m.detailTemplateID, &tmpl)
+		}
+		return true, m, nil
+
+	case key.Matches(msg, m.keys.Edit):
+		if m.detailTemplateID != "" {
+			tmpl, ok := m.cfg.GetTemplate(m.detailTemplateID)
+			if ok {
+				cmd := m.templateForm.ShowEdit(m.detailTemplateID, tmpl)
+				return true, m, cmd
+			}
+		}
+		return true, m, nil
+	}
+	return false, m, nil
+}
+
+// startTemplateToolEditor opens the template tool permission editor.
+// It starts the template as a test server to discover tools.
+func (m *Model) startTemplateToolEditor(tmplName string, tmpl *config.TemplateConfig) (bool, tea.Model, tea.Cmd) {
+	testName := tmplName + "__test"
+	testSrv := tmpl.ToServerConfig()
+
+	// Check if already running from a previous test
+	handle := m.supervisor.Get(testName)
+	if handle != nil && handle.IsRunning() {
+		if tools, ok := m.serverTools[testName]; ok && len(tools) > 0 {
+			m.templatePerms.Show(tmplName, tools, tmpl.DisabledTools)
+			return true, m, nil
+		}
+	}
+
+	// Show discovering state and start test server
+	m.templatePerms.ShowDiscovering(tmplName)
+
+	var cmds []tea.Cmd
+	cmds = append(cmds, func() tea.Msg {
+		log.Printf("Starting template test server %s for tool discovery", testName)
+		_, err := m.supervisor.Start(m.ctx, testName, testSrv)
+		if err != nil {
+			log.Printf("Failed to start template test server %s: %v", testName, err)
+		}
+		return nil
+	})
+
+	// Store the test server name so we can check for its tools
+	m.permDiscoveryServers = []string{testName}
+	m.permDiscoveryExpected = 1
+
+	cmds = append(cmds, tea.Tick(15*time.Second, func(t time.Time) tea.Msg {
+		return permDiscoveryTimeoutMsg{}
+	}))
+
+	return true, m, tea.Batch(cmds...)
+}
+
+func (m Model) handleTemplateFormResult(result views.TemplateFormResult) (tea.Model, tea.Cmd) {
+	if !result.Submitted {
+		return m, nil
+	}
+
+	var err error
+	if result.IsEdit {
+		if result.OriginalName != "" && result.Name != result.OriginalName {
+			if err = m.cfg.RenameTemplate(result.OriginalName, result.Name); err != nil {
+				log.Printf("Failed to rename template: %v", err)
+				return m, m.toast.ShowError(fmt.Sprintf("Failed to rename: %v", err))
+			}
+			if m.detailTemplateID == result.OriginalName {
+				m.detailTemplateID = result.Name
+			}
+		}
+		err = m.cfg.UpdateTemplate(result.Name, result.Template)
+		if err != nil {
+			log.Printf("Failed to update template: %v", err)
+			return m, m.toast.ShowError(fmt.Sprintf("Failed to update: %v", err))
+		}
+	} else {
+		err = m.cfg.AddTemplate(result.Name, result.Template)
+		if err != nil {
+			log.Printf("Failed to add template: %v", err)
+			return m, m.toast.ShowError(fmt.Sprintf("Failed to add: %v", err))
+		}
+	}
+
+	if err := m.saveConfig(); err != nil {
+		log.Printf("Failed to save config: %v", err)
+		return m, m.toast.ShowError(fmt.Sprintf("Failed to save: %v", err))
+	}
+
+	m.refreshTemplateList()
+
+	if result.IsEdit && m.currentView == ViewDetail && m.detailTemplateID == result.Name {
+		if tmpl, ok := m.cfg.GetTemplate(result.Name); ok {
+			m.templateDetail.SetTemplate(result.Name, &tmpl, m.cfg.ServersUsingTemplate(result.Name))
+		}
+	}
+
+	if result.IsEdit {
+		return m, m.toast.ShowSuccess(fmt.Sprintf("Template \"%s\" updated", result.Name))
+	}
+	return m, m.toast.ShowSuccess(fmt.Sprintf("Template \"%s\" added", result.Name))
+}
+
+func (m Model) handleTemplateToolPermissionsResult(result views.TemplateToolPermissionsResult) (tea.Model, tea.Cmd) {
+	// Stop the test server
+	testName := result.TemplateName + "__test"
+	go func() { _ = m.supervisor.Stop(testName) }()
+
+	if !result.Submitted {
+		return m, nil
+	}
+
+	// Update disabled tools
+	if err := m.cfg.SetTemplateDisabledTools(result.TemplateName, result.DisabledTools); err != nil {
+		log.Printf("Failed to update disabled tools: %v", err)
+		return m, m.toast.ShowError(fmt.Sprintf("Failed to update: %v", err))
+	}
+
+	if err := m.saveConfig(); err != nil {
+		log.Printf("Failed to save config: %v", err)
+		return m, m.toast.ShowError(fmt.Sprintf("Failed to save: %v", err))
+	}
+
+	m.refreshTemplateList()
+	if m.currentView == ViewDetail && m.detailTemplateID == result.TemplateName {
+		if tmpl, ok := m.cfg.GetTemplate(result.TemplateName); ok {
+			m.templateDetail.SetTemplate(result.TemplateName, &tmpl, m.cfg.ServersUsingTemplate(result.TemplateName))
+		}
+	}
+
+	return m, m.toast.ShowSuccess("Tool filter updated")
+}
+
+func (m Model) updateWithTemplateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return m.updateModal(msg, modalUpdateConfig{
+		setSize: func(w, h int) {
+			m.templateForm.SetSize(w, h)
+		},
+		handleResult: func(msg tea.Msg) (bool, Model) {
+			if result, ok := msg.(views.TemplateFormResult); ok {
+				newModel, _ := m.handleTemplateFormResult(result)
+				return true, newModel.(Model)
+			}
+			return false, m
+		},
+		updateForm: func(msg tea.Msg) tea.Cmd {
+			return m.templateForm.Update(msg)
+		},
+	})
+}
+
+func (m Model) updateWithTemplatePerms(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if key.Matches(msg, m.keys.CtrlC) {
+			return m, tea.Quit
+		}
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.updateLayout()
+		m.templatePerms.SetSize(msg.Width, msg.Height)
+	case views.TemplateToolPermissionsResult:
+		return m.handleTemplateToolPermissionsResult(msg)
+	}
+
+	if cmd := m.templatePerms.Update(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	if evt, ok := msg.(events.Event); ok {
+		if cmd := m.handleEvent(evt); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, m.waitForEvent())
+
+		// Check if template test server reported tools
+		if m.templatePerms.IsDiscovering() {
+			if toolEvt, ok := evt.(events.ToolsUpdatedEvent); ok {
+				testName := m.templatePerms.GetTemplateName() + "__test"
+				if toolEvt.ServerID() == testName {
+					tmpl, ok := m.cfg.GetTemplate(m.templatePerms.GetTemplateName())
+					if ok {
+						m.templatePerms.FinishDiscovery(toolEvt.Tools, tmpl.DisabledTools)
+					}
+				}
+			}
+		}
+	}
+
+	var toastCmd tea.Cmd
+	m.toast, toastCmd = m.toast.Update(msg)
+	if toastCmd != nil {
+		cmds = append(cmds, toastCmd)
+	}
+
+	return m, tea.Batch(cmds...)
 }

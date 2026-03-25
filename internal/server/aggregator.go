@@ -147,7 +147,7 @@ func (a *Aggregator) GetTool(name string) (AggregatedTool, bool) {
 // discoverServerTools starts a server (if needed) and retrieves its tools.
 // serverName is the server's map key (identifier).
 func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string) ([]AggregatedTool, error) {
-	srv, ok := a.cfg.GetServer(serverName)
+	srv, ok := a.cfg.ResolveServer(serverName)
 	if !ok {
 		return nil, fmt.Errorf("server not found: %s", serverName)
 	}
@@ -173,11 +173,20 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 		return nil, fmt.Errorf("wait for tools: %w", err)
 	}
 
+	// Get disabled tool names from template (if any)
+	disabledTools := a.cfg.GetDisabledToolsForServer(serverName)
+
 	// Get tools from the running server
 	mcpTools := handle.Tools()
 
-	tools := make([]AggregatedTool, len(mcpTools))
-	for i, t := range mcpTools {
+	tools := make([]AggregatedTool, 0, len(mcpTools))
+	for _, t := range mcpTools {
+		// Skip tools that are disabled by the template
+		if isToolInList(t.Name, disabledTools) {
+			log.Printf("Tool %s.%s disabled by template, skipping", serverName, t.Name)
+			continue
+		}
+
 		// Qualify tool name: serverName.toolName
 		qualifiedName := serverName + "." + t.Name
 
@@ -197,17 +206,27 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 			}
 		}
 
-		tools[i] = AggregatedTool{
+		tools = append(tools, AggregatedTool{
 			Name:        qualifiedName,
 			Description: desc,
 			InputSchema: schemaJSON,
 			serverID:    serverName,
 			serverName:  serverName,
 			origName:    t.Name,
-		}
+		})
 	}
 
 	return tools, nil
+}
+
+// isToolInList checks if a tool name is in the given list.
+func isToolInList(name string, list []string) bool {
+	for _, n := range list {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseToolName extracts serverID and tool name from a qualified tool name.

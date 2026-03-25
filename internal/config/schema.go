@@ -51,6 +51,145 @@ type ServerConfig struct {
 	// Timeouts (seconds)
 	StartupTimeoutSec int `json:"startup_timeout_sec,omitempty"` // Default 10
 	ToolTimeoutSec    int `json:"tool_timeout_sec,omitempty"`    // Default 60
+
+	// Template reference: if set, this server inherits from a template.
+	// The server's Args are appended to the template's Args; Env is merged
+	// (server values override template values). Other fields from the template
+	// are used as defaults and can be overridden by the server config.
+	Template string `json:"template,omitempty"`
+}
+
+// TemplateConfig defines a reusable server configuration template.
+// Templates allow defining the base MCP server configuration once and reusing
+// it across multiple server definitions. They also support tool blacklisting.
+type TemplateConfig struct {
+	// Description is a human-readable description of the template.
+	Description string `json:"description,omitempty"`
+
+	// Base server configuration fields (same as ServerConfig).
+	Kind    ServerKind        `json:"kind,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+
+	URL               string            `json:"url,omitempty"`
+	BearerTokenEnvVar string            `json:"bearer_token_env_var,omitempty"`
+	HTTPHeaders       map[string]string `json:"http_headers,omitempty"`
+	EnvHTTPHeaders    map[string]string `json:"env_http_headers,omitempty"`
+	OAuth             *OAuthConfig      `json:"oauth,omitempty"`
+
+	StartupTimeoutSec int `json:"startup_timeout_sec,omitempty"`
+	ToolTimeoutSec    int `json:"tool_timeout_sec,omitempty"`
+
+	// DisabledTools lists tool names that should never be exposed to clients.
+	// Tools in this list are filtered out during aggregation and shown
+	// greyed-out in the TUI.
+	DisabledTools []string `json:"disabledTools,omitempty"`
+
+	// TestArgs are extra arguments appended when starting the template as a
+	// test server for tool discovery. This is useful for servers that require
+	// connection-specific parameters (e.g. ABAP system details) to start.
+	TestArgs []string `json:"testArgs,omitempty"`
+}
+
+// TemplateEntry pairs a template name with its configuration.
+type TemplateEntry struct {
+	Name   string
+	Config TemplateConfig
+}
+
+// Validate checks that the TemplateConfig is in a valid state.
+func (t TemplateConfig) Validate() error {
+	hasCommand := t.Command != ""
+	hasURL := t.URL != ""
+
+	if hasCommand && hasURL {
+		return errors.New("cannot set both command and url: stdio and http are mutually exclusive")
+	}
+	if !hasCommand && !hasURL {
+		return errors.New("must set either command (for stdio) or url (for http)")
+	}
+
+	if hasCommand {
+		if t.BearerTokenEnvVar != "" {
+			return errors.New("bearer_token_env_var is only valid for http servers")
+		}
+		if len(t.HTTPHeaders) > 0 {
+			return errors.New("http_headers is only valid for http servers")
+		}
+		if len(t.EnvHTTPHeaders) > 0 {
+			return errors.New("env_http_headers is only valid for http servers")
+		}
+		if t.OAuth != nil {
+			return errors.New("oauth is only valid for http servers")
+		}
+	}
+
+	if hasURL {
+		if len(t.Args) > 0 {
+			return errors.New("args is only valid for stdio servers")
+		}
+		if t.BearerTokenEnvVar != "" && t.OAuth != nil {
+			return errors.New("bearer_token_env_var and oauth are mutually exclusive")
+		}
+		if t.OAuth != nil && t.OAuth.CallbackPort != nil {
+			port := *t.OAuth.CallbackPort
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("oauth callback_port must be 1-65535, got %d", port)
+			}
+		}
+	}
+
+	return nil
+}
+
+// IsHTTP returns true if this template is for an HTTP server.
+func (t TemplateConfig) IsHTTP() bool {
+	return t.URL != ""
+}
+
+// IsToolDisabled returns true if the given tool name is in the disabled list.
+func (t TemplateConfig) IsToolDisabled(toolName string) bool {
+	for _, name := range t.DisabledTools {
+		if name == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// ToServerConfig converts the template to a ServerConfig for test/discovery purposes.
+// TestArgs are appended to Args so that tools can be discovered from servers
+// that require connection-specific parameters.
+func (t TemplateConfig) ToServerConfig() ServerConfig {
+	args := append([]string{}, t.Args...)
+	args = append(args, t.TestArgs...)
+	return ServerConfig{
+		Kind:              t.Kind,
+		Command:           t.Command,
+		Args:              args,
+		Cwd:               t.Cwd,
+		Env:               copyStringMap(t.Env),
+		URL:               t.URL,
+		BearerTokenEnvVar: t.BearerTokenEnvVar,
+		HTTPHeaders:       copyStringMap(t.HTTPHeaders),
+		EnvHTTPHeaders:    copyStringMap(t.EnvHTTPHeaders),
+		OAuth:             t.OAuth,
+		StartupTimeoutSec: t.StartupTimeoutSec,
+		ToolTimeoutSec:    t.ToolTimeoutSec,
+	}
+}
+
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for backward compatibility.
@@ -123,6 +262,7 @@ type ToolPermission struct {
 type Config struct {
 	SchemaVersion    int                        `json:"schemaVersion"`
 	DefaultNamespace string                     `json:"defaultNamespace,omitempty"`
+	Templates        map[string]TemplateConfig  `json:"templates,omitempty"`
 	Servers          map[string]ServerConfig    `json:"servers"`
 	Namespaces       map[string]NamespaceConfig `json:"namespaces,omitempty"`
 	ToolPermissions  []ToolPermission           `json:"toolPermissions,omitempty"`
@@ -137,6 +277,7 @@ type Config struct {
 func NewConfig() *Config {
 	return &Config{
 		SchemaVersion: SchemaVersion,
+		Templates:     make(map[string]TemplateConfig),
 		Servers:       make(map[string]ServerConfig),
 		Namespaces:    make(map[string]NamespaceConfig),
 		LastModified:  time.Now(),
@@ -189,11 +330,22 @@ func (s *ServerConfig) SetEnabled(enabled bool) {
 // Validate checks that the ServerConfig is in a valid state.
 // Returns an error if:
 // - Both Command and URL are set (mutually exclusive)
-// - Neither Command nor URL is set (must have one)
+// - Neither Command nor URL is set (must have one) — unless Template is set
 // - Kind is explicitly set but doesn't match the fields
 func (s ServerConfig) Validate() error {
 	hasCommand := s.Command != ""
 	hasURL := s.URL != ""
+
+	// Servers referencing a template are allowed to have no command/url
+	// (they inherit from the template). We still validate mutually exclusive fields.
+	if s.Template != "" {
+		if hasCommand && hasURL {
+			return errors.New("cannot set both command and url: stdio and http are mutually exclusive")
+		}
+		// Template-based servers only carry args (appended) and env (merged),
+		// so skip the "must have command or url" check.
+		return nil
+	}
 
 	// Must have exactly one of Command or URL
 	if hasCommand && hasURL {
@@ -291,6 +443,132 @@ func (c *Config) GetServer(name string) (ServerConfig, bool) {
 	return s, ok
 }
 
+// GetTemplate returns a template by name and whether it was found.
+func (c *Config) GetTemplate(name string) (TemplateConfig, bool) {
+	if c.Templates == nil {
+		return TemplateConfig{}, false
+	}
+	t, ok := c.Templates[name]
+	return t, ok
+}
+
+// TemplateEntries returns the templates as name/config pairs, sorted by name for display.
+func (c *Config) TemplateEntries() []TemplateEntry {
+	entries := make([]TemplateEntry, 0, len(c.Templates))
+	for name, cfg := range c.Templates {
+		entries = append(entries, TemplateEntry{Name: name, Config: cfg})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	return entries
+}
+
+// ResolveServer returns the effective ServerConfig for a server, merging its
+// template if one is referenced. The merge rules are:
+//   - Template provides the base config (command, url, args, env, timeouts, etc.)
+//   - Server-level Args are appended to template Args
+//   - Server-level Env is merged on top of template Env (server wins)
+//   - Non-zero server fields override the template (e.g. Cwd, timeouts)
+//   - Enabled and Autostart always come from the server config
+func (c *Config) ResolveServer(name string) (ServerConfig, bool) {
+	srv, ok := c.Servers[name]
+	if !ok {
+		return ServerConfig{}, false
+	}
+	if srv.Template == "" {
+		return srv, true
+	}
+	tmpl, ok := c.GetTemplate(srv.Template)
+	if !ok {
+		// Template not found — return server as-is (will likely fail validation)
+		return srv, true
+	}
+
+	resolved := tmpl.ToServerConfig()
+
+	// Preserve server identity fields
+	resolved.Enabled = srv.Enabled
+	resolved.Autostart = srv.Autostart
+	resolved.Template = srv.Template
+
+	// Append server args to template args
+	if len(srv.Args) > 0 {
+		resolved.Args = append(resolved.Args, srv.Args...)
+	}
+
+	// Merge env (server values override template values)
+	if len(srv.Env) > 0 {
+		if resolved.Env == nil {
+			resolved.Env = make(map[string]string)
+		}
+		for k, v := range srv.Env {
+			resolved.Env[k] = v
+		}
+	}
+
+	// Override non-zero fields from server
+	if srv.Command != "" {
+		resolved.Command = srv.Command
+	}
+	if srv.URL != "" {
+		resolved.URL = srv.URL
+	}
+	if srv.Cwd != "" {
+		resolved.Cwd = srv.Cwd
+	}
+	if srv.Kind != "" {
+		resolved.Kind = srv.Kind
+	}
+	if srv.StartupTimeoutSec > 0 {
+		resolved.StartupTimeoutSec = srv.StartupTimeoutSec
+	}
+	if srv.ToolTimeoutSec > 0 {
+		resolved.ToolTimeoutSec = srv.ToolTimeoutSec
+	}
+	if srv.BearerTokenEnvVar != "" {
+		resolved.BearerTokenEnvVar = srv.BearerTokenEnvVar
+	}
+	if srv.OAuth != nil {
+		resolved.OAuth = srv.OAuth
+	}
+	if len(srv.HTTPHeaders) > 0 {
+		resolved.HTTPHeaders = srv.HTTPHeaders
+	}
+	if len(srv.EnvHTTPHeaders) > 0 {
+		resolved.EnvHTTPHeaders = srv.EnvHTTPHeaders
+	}
+
+	return resolved, true
+}
+
+// GetDisabledToolsForServer returns the disabled tools list from the server's
+// template, or nil if the server doesn't use a template.
+func (c *Config) GetDisabledToolsForServer(serverName string) []string {
+	srv, ok := c.Servers[serverName]
+	if !ok || srv.Template == "" {
+		return nil
+	}
+	tmpl, ok := c.GetTemplate(srv.Template)
+	if !ok {
+		return nil
+	}
+	return tmpl.DisabledTools
+}
+
+// IsToolDisabledByTemplate returns whether a tool is disabled by the server's template.
+func (c *Config) IsToolDisabledByTemplate(serverName, toolName string) bool {
+	srv, ok := c.Servers[serverName]
+	if !ok || srv.Template == "" {
+		return false
+	}
+	tmpl, ok := c.GetTemplate(srv.Template)
+	if !ok {
+		return false
+	}
+	return tmpl.IsToolDisabled(toolName)
+}
+
 // GetNamespace returns a namespace by name and whether it was found.
 func (c *Config) GetNamespace(name string) (NamespaceConfig, bool) {
 	ns, ok := c.Namespaces[name]
@@ -307,12 +585,23 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// Validate checks that all servers in the config are valid.
-// Returns an error describing the first invalid server found.
+// Validate checks that all templates and servers in the config are valid.
+// Returns an error describing the first invalid entry found.
 func (c *Config) Validate() error {
+	for name, tmpl := range c.Templates {
+		if err := tmpl.Validate(); err != nil {
+			return fmt.Errorf("template %q: %w", name, err)
+		}
+	}
 	for name, srv := range c.Servers {
 		if err := srv.Validate(); err != nil {
 			return fmt.Errorf("server %q: %w", name, err)
+		}
+		// Validate template reference exists
+		if srv.Template != "" {
+			if _, ok := c.GetTemplate(srv.Template); !ok {
+				return fmt.Errorf("server %q references unknown template %q", name, srv.Template)
+			}
 		}
 	}
 	return nil

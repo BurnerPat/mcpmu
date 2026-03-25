@@ -20,6 +20,7 @@ var (
 	addOAuthCallbackPort int
 	addStartupTimeout    int
 	addToolTimeout       int
+	addTemplate          string
 )
 
 var addCmd = &cobra.Command{
@@ -29,6 +30,7 @@ var addCmd = &cobra.Command{
 
 For stdio servers, the command and arguments follow the -- separator.
 For HTTP servers, provide the URL as a positional argument (or use --url).
+For template-based servers, use --template to reference a pre-defined template.
 
 Examples:
   # Stdio server
@@ -43,7 +45,10 @@ Examples:
   mcpmu add atlassian https://mcp.atlassian.com/mcp --scopes read,write
 
   # HTTP server with pre-registered OAuth client
-  mcpmu add slack https://mcp.slack.com/mcp --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118`,
+  mcpmu add slack https://mcp.slack.com/mcp --oauth-client-id 1601185624273.8899143856786 --oauth-callback-port 3118
+
+  # Server from template (args are appended to template args)
+  mcpmu add dev-abap --template abap -- --host dev.example.com --port 443`,
 	RunE: runAdd,
 }
 
@@ -59,11 +64,17 @@ func init() {
 	addCmd.Flags().IntVar(&addOAuthCallbackPort, "oauth-callback-port", 0, "OAuth callback port (1-65535)")
 	addCmd.Flags().IntVar(&addStartupTimeout, "startup-timeout", 0, "Startup timeout in seconds (default: 10)")
 	addCmd.Flags().IntVar(&addToolTimeout, "tool-timeout", 0, "Tool call timeout in seconds (default: 60)")
+	addCmd.Flags().StringVar(&addTemplate, "template", "", "Create server from a pre-defined template")
 
 	rootCmd.AddCommand(addCmd)
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
+	// Template-based server
+	if addTemplate != "" {
+		return runAddFromTemplate(cmd, args)
+	}
+
 	// Check if this is an HTTP server:
 	// 1. --url flag provided, or
 	// 2. Second positional arg looks like a URL
@@ -93,6 +104,69 @@ func validateTimeoutFlags() error {
 	if addToolTimeout < 0 {
 		return fmt.Errorf("--tool-timeout must be a positive number")
 	}
+	return nil
+}
+
+func runAddFromTemplate(cmd *cobra.Command, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("missing server name\n\nUsage: mcpmu add <name> --template <template> [-- extra-args...]")
+	}
+	name := args[0]
+
+	// Parse extra args (after --), these are appended to template args
+	var extraArgs []string
+	dashIdx := cmd.ArgsLenAtDash()
+	if dashIdx >= 0 {
+		extraArgs = args[dashIdx:]
+	}
+
+	// Parse environment variables
+	env, err := parseEnvFlags(addEnvFlags)
+	if err != nil {
+		return err
+	}
+
+	// Load config
+	var cfg *config.Config
+	if addConfigPath != "" {
+		cfg, err = config.LoadFrom(addConfigPath)
+	} else {
+		cfg, err = config.Load()
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Validate template exists
+	if _, ok := cfg.GetTemplate(addTemplate); !ok {
+		return fmt.Errorf("template %q not found", addTemplate)
+	}
+
+	srv := config.ServerConfig{
+		Template:          addTemplate,
+		Args:              extraArgs,
+		Env:               env,
+		Cwd:               addCwd,
+		Autostart:         addAutostart,
+		StartupTimeoutSec: addStartupTimeout,
+		ToolTimeoutSec:    addToolTimeout,
+	}
+
+	if err := cfg.AddServer(name, srv); err != nil {
+		return err
+	}
+
+	if addConfigPath != "" {
+		if err := config.SaveTo(cfg, addConfigPath); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+	} else {
+		if err := config.Save(cfg); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+	}
+
+	fmt.Printf("Added server %q from template %q\n", name, addTemplate)
 	return nil
 }
 

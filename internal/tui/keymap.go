@@ -25,6 +25,7 @@ type KeyBindings struct {
 	TabPrev key.Binding
 	Tab1    key.Binding
 	Tab2    key.Binding
+	Tab3    key.Binding
 	Escape  key.Binding
 	CtrlC   key.Binding
 
@@ -80,6 +81,10 @@ func NewKeyBindings() KeyBindings {
 		Tab2: key.NewBinding(
 			key.WithKeys("2"),
 			key.WithHelp("2", "namespaces"),
+		),
+		Tab3: key.NewBinding(
+			key.WithKeys("3"),
+			key.WithHelp("3", "templates"),
 		),
 		Escape: key.NewBinding(
 			key.WithKeys("esc"),

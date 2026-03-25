@@ -27,6 +27,9 @@ type ServerItem struct {
 
 func (i ServerItem) Title() string { return i.Name }
 func (i ServerItem) Description() string {
+	if i.Config.Template != "" {
+		return "template: " + i.Config.Template
+	}
 	if i.Config.IsHTTP() {
 		return i.Config.URL
 	}
@@ -291,9 +294,19 @@ func (d serverDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		line1.WriteString(formatAuthBadge(si, d.theme))
 	}
 
-	// Second line: command/URL + namespace badges
+	// Second line: template badge + command/URL + namespace badges
 	var line2 strings.Builder
 	line2.WriteString("   ")
+
+	// Template badge in distinct color before the command
+	templateBadgeLen := 0
+	if si.Config.Template != "" {
+		tplStyle := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0369A1", Dark: "#7DCFFF"})
+		badge := tplStyle.Render("⬡ " + si.Config.Template)
+		line2.WriteString(badge)
+		line2.WriteString(" ")
+		templateBadgeLen = lipgloss.Width(si.Config.Template) + 4 // "⬡ " + name + " "
+	}
 
 	var cmdOrURL string
 	if si.Config.IsHTTP() {
@@ -304,11 +317,16 @@ func (d serverDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 			cmdOrURL += " " + strings.Join(si.Config.Args, " ")
 		}
 	}
-	maxCmdLen := 45
+	maxCmdLen := 45 - templateBadgeLen
+	if maxCmdLen < 15 {
+		maxCmdLen = 15
+	}
 	if len(cmdOrURL) > maxCmdLen {
 		cmdOrURL = cmdOrURL[:maxCmdLen-3] + "..."
 	}
-	line2.WriteString(d.theme.Muted.Render(cmdOrURL))
+	if cmdOrURL != "" {
+		line2.WriteString(d.theme.Muted.Render(cmdOrURL))
+	}
 
 	// Namespace badges on second line
 	if len(si.Namespaces) > 0 {
