@@ -26,6 +26,9 @@ type Router struct {
 	// Active namespace info (set after initialize)
 	activeNamespaceName string
 	selectionMethod     SelectionMethod
+
+	// Separator between server name and tool name (synced from aggregator)
+	separator string
 }
 
 // NewRouter creates a new tool call router.
@@ -34,13 +37,15 @@ func NewRouter(cfg *config.Config, supervisor *process.Supervisor, aggregator *A
 		cfg:        cfg,
 		supervisor: supervisor,
 		aggregator: aggregator,
+		separator:  ".",
 	}
 }
 
 // SetActiveNamespace sets the active namespace info for the router.
-func (r *Router) SetActiveNamespace(namespaceName string, selection SelectionMethod) {
+func (r *Router) SetActiveNamespace(namespaceName string, selection SelectionMethod, separator string) {
 	r.activeNamespaceName = namespaceName
 	r.selectionMethod = selection
+	r.separator = separator
 }
 
 // CallTool routes a tool call to the appropriate server and returns the result.
@@ -48,7 +53,7 @@ func (r *Router) CallTool(ctx context.Context, qualifiedName string, arguments j
 	log.Printf("CallTool: %s", qualifiedName)
 
 	// Parse the tool name
-	serverName, toolName, isManager := ParseToolName(qualifiedName)
+	serverName, toolName, isManager := ParseToolName(qualifiedName, r.separator)
 
 	// Handle manager tools (always allowed, no permission check)
 	if isManager {
@@ -126,18 +131,19 @@ func (r *Router) CallTool(ctx context.Context, qualifiedName string, arguments j
 
 // handleManagerTool handles mcpmu.* meta-tools.
 func (r *Router) handleManagerTool(ctx context.Context, toolName string, arguments json.RawMessage) (*ToolCallResult, *RPCError) {
+	sep := r.separator
 	switch toolName {
-	case "mcpmu.servers_list":
+	case "mcpmu" + sep + "servers_list":
 		return r.handleServersList(ctx)
-	case "mcpmu.servers_start":
+	case "mcpmu" + sep + "servers_start":
 		return r.handleServersStart(ctx, arguments)
-	case "mcpmu.servers_stop":
+	case "mcpmu" + sep + "servers_stop":
 		return r.handleServersStop(ctx, arguments)
-	case "mcpmu.servers_restart":
+	case "mcpmu" + sep + "servers_restart":
 		return r.handleServersRestart(ctx, arguments)
-	case "mcpmu.server_logs":
+	case "mcpmu" + sep + "server_logs":
 		return r.handleServerLogs(ctx, arguments)
-	case "mcpmu.namespaces_list":
+	case "mcpmu" + sep + "namespaces_list":
 		return r.handleNamespacesList(ctx)
 	default:
 		return nil, ErrToolNotFound(toolName)

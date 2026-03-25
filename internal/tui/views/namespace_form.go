@@ -38,11 +38,13 @@ type NamespaceFormModel struct {
 	// Form field values
 	name          string
 	description   string
+	separator     string
 	denyByDefault bool
 
 	// Initial values for dirty checking
 	initialName          string
 	initialDescription   string
+	initialSeparator     string
 	initialDenyByDefault bool
 
 	// Confirm discard state
@@ -72,10 +74,12 @@ func (m *NamespaceFormModel) ShowAdd() tea.Cmd {
 	m.originalName = ""
 	m.name = ""
 	m.description = ""
+	m.separator = ""
 	m.denyByDefault = false
 	// Save initial values
 	m.initialName = ""
 	m.initialDescription = ""
+	m.initialSeparator = ""
 	m.initialDenyByDefault = false
 	m.buildForm()
 	return m.form.Init()
@@ -90,10 +94,12 @@ func (m *NamespaceFormModel) ShowEdit(name string, ns config.NamespaceConfig) te
 	m.originalName = name
 	m.name = name
 	m.description = ns.Description
+	m.separator = ns.Separator
 	m.denyByDefault = ns.DenyByDefault
 	// Save initial values
 	m.initialName = m.name
 	m.initialDescription = m.description
+	m.initialSeparator = m.separator
 	m.initialDenyByDefault = m.denyByDefault
 	m.buildForm()
 	return m.form.Init()
@@ -129,6 +135,13 @@ func (m *NamespaceFormModel) buildForm() {
 				CharLimit(200).
 				Lines(2),
 
+			huh.NewInput().
+				Title("Separator").
+				Description("Between server name and tool name (default \".\")").
+				Placeholder(".").
+				Value(&m.separator).
+				CharLimit(4),
+
 			huh.NewConfirm().
 				Title("Deny by Default").
 				Description("Block tools without explicit permission").
@@ -144,6 +157,7 @@ func (m *NamespaceFormModel) buildForm() {
 func (m *NamespaceFormModel) isDirty() bool {
 	return m.name != m.initialName ||
 		m.description != m.initialDescription ||
+		m.separator != m.initialSeparator ||
 		m.denyByDefault != m.initialDenyByDefault
 }
 
@@ -261,6 +275,7 @@ func (m NamespaceFormModel) buildNamespaceConfig() config.NamespaceConfig {
 	}
 
 	ns.Description = strings.TrimSpace(m.description)
+	ns.Separator = strings.TrimSpace(m.separator)
 	ns.DenyByDefault = m.denyByDefault
 
 	return ns

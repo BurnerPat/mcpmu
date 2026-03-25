@@ -47,6 +47,7 @@ func init() {
 
 var (
 	namespaceAddDescription string
+	namespaceAddSeparator   string
 	namespaceAddConfigPath  string
 )
 
@@ -66,6 +67,7 @@ Examples:
 
 func init() {
 	namespaceAddCmd.Flags().StringVarP(&namespaceAddDescription, "description", "d", "", "Description for the namespace")
+	namespaceAddCmd.Flags().StringVarP(&namespaceAddSeparator, "separator", "s", "", "Separator between server name and tool name (default \".\")")
 	namespaceAddCmd.Flags().StringVarP(&namespaceAddConfigPath, "config", "c", "", "Path to config file")
 }
 
@@ -79,6 +81,7 @@ func runNamespaceAdd(cmd *cobra.Command, args []string) error {
 
 	ns := config.NamespaceConfig{
 		Description: namespaceAddDescription,
+		Separator:   namespaceAddSeparator,
 	}
 
 	if err := cfg.AddNamespace(name, ns); err != nil {

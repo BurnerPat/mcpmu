@@ -173,6 +173,10 @@ func (d namespaceDelegate) Render(w io.Writer, m list.Model, index int, item lis
 		line1 += "  " + d.theme.Warn.Render("[deny-by-default]")
 	}
 
+	if ni.Config.Separator != "" && ni.Config.Separator != "." {
+		line1 += "  " + d.theme.Faint.Render(fmt.Sprintf("[sep: %s]", ni.Config.Separator))
+	}
+
 	// Second line: description or server count
 	var line2 string
 	line2 = "    "

@@ -582,19 +582,24 @@ func TestParseToolName(t *testing.T) {
 	tests := []struct {
 		name       string
 		input      string
+		sep        string
 		wantServer string
 		wantTool   string
 		wantMgr    bool
 	}{
-		{"manager tool", "mcpmu.servers_list", "", "mcpmu.servers_list", true},
-		{"regular tool", "filesystem.read_file", "filesystem", "read_file", false},
-		{"no dot", "tool_name", "", "tool_name", false},
-		{"empty", "", "", "", false},
+		{"manager tool", "mcpmu.servers_list", ".", "", "mcpmu.servers_list", true},
+		{"regular tool", "filesystem.read_file", ".", "filesystem", "read_file", false},
+		{"no dot", "tool_name", ".", "", "tool_name", false},
+		{"empty", "", ".", "", "", false},
+		{"custom sep manager", "mcpmu-servers_list", "-", "", "mcpmu-servers_list", true},
+		{"custom sep regular", "filesystem-read_file", "-", "filesystem", "read_file", false},
+		{"custom sep no match", "tool_name", "-", "", "tool_name", false},
+		{"double colon sep", "filesystem::read_file", "::", "filesystem", "read_file", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server, tool, isMgr := ParseToolName(tt.input)
+			server, tool, isMgr := ParseToolName(tt.input, tt.sep)
 			if server != tt.wantServer {
 				t.Errorf("server = %q, want %q", server, tt.wantServer)
 			}

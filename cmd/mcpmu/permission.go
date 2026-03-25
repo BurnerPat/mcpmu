@@ -459,22 +459,20 @@ func runPermissionUnsetServerDefault(cmd *cobra.Command, args []string) error {
 }
 
 // normalizeToolName strips a qualified server prefix when it matches the
-// selected server. This allows users to paste tools/list output (serverName.tool)
-// while preserving legitimate tool names that include dots.
+// selected server. This allows users to paste tools/list output (serverName<sep>tool)
+// while preserving legitimate tool names that include the separator.
 func normalizeToolName(toolName, serverName string) string {
 	toolName = strings.TrimSpace(toolName)
 	if toolName == "" {
 		return toolName
 	}
 
-	parts := strings.SplitN(toolName, ".", 2)
-	if len(parts) != 2 {
-		return toolName
-	}
-
-	prefix := parts[0]
-	if serverName != "" && prefix == serverName {
-		return parts[1]
+	// Try common separators: "." is the default, but users may configure others.
+	for _, sep := range []string{".", "-", "_", "::", ":"} {
+		parts := strings.SplitN(toolName, sep, 2)
+		if len(parts) == 2 && serverName != "" && parts[0] == serverName {
+			return parts[1]
+		}
 	}
 
 	return toolName

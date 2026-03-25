@@ -248,9 +248,18 @@ type ServerEntry struct {
 // The namespace name/identifier is the map key, not stored in this struct.
 type NamespaceConfig struct {
 	Description    string          `json:"description,omitempty"`
+	Separator      string          `json:"separator,omitempty"` // Tool name separator (default ".")
 	ServerIDs      []string        `json:"serverIds"`
 	DenyByDefault  bool            `json:"denyByDefault,omitempty"`  // If true, unconfigured tools are denied
 	ServerDefaults map[string]bool `json:"serverDefaults,omitempty"` // Per-server deny-default override (true = deny)
+}
+
+// GetSeparator returns the configured separator, defaulting to ".".
+func (ns NamespaceConfig) GetSeparator() string {
+	if ns.Separator == "" {
+		return "."
+	}
+	return ns.Separator
 }
 
 // NamespaceEntry pairs a namespace name with its configuration.

@@ -274,8 +274,10 @@ func (s *Server) handleInitialize(ctx context.Context, params json.RawMessage) (
 		return nil, err
 	}
 
-	// Update router with active namespace info
-	s.router.SetActiveNamespace(s.activeNamespaceName, s.selectionMethod)
+	// Update aggregator and router with active namespace info
+	sep := s.activeSeparator()
+	s.aggregator.SetSeparator(sep)
+	s.router.SetActiveNamespace(s.activeNamespaceName, s.selectionMethod, sep)
 
 	s.initialized = true
 
@@ -329,9 +331,10 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *RPCError) {
 
 	// Filter tools based on permissions (if namespace is active)
 	if activeNamespaceName != "" {
+		sep := s.activeSeparator()
 		filtered := make([]AggregatedTool, 0, len(tools))
 		for _, tool := range tools {
-			serverName, toolName, isManager := ParseToolName(tool.Name)
+			serverName, toolName, isManager := ParseToolName(tool.Name, sep)
 			// Manager tools are always shown
 			if isManager {
 				filtered = append(filtered, tool)
@@ -434,7 +437,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	// Parse tool name to check namespace enforcement
-	serverName, _, isManager := ParseToolName(req.Name)
+	serverName, _, isManager := ParseToolName(req.Name, s.activeSeparator())
 
 	// Manager tools are always allowed
 	if !isManager && serverName != "" {
@@ -461,6 +464,18 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	return result, nil
+}
+
+// activeSeparator returns the tool name separator for the active namespace.
+// Returns "." if no namespace is active or the namespace has no custom separator.
+func (s *Server) activeSeparator() string {
+	if s.activeNamespaceName == "" {
+		return "."
+	}
+	if ns, ok := s.cfg.Namespaces[s.activeNamespaceName]; ok {
+		return ns.GetSeparator()
+	}
+	return "."
 }
 
 // resolveNamespace determines which namespace to use and which servers are active.
@@ -703,12 +718,14 @@ func (s *Server) applyReload(ctx context.Context, newCfg *config.Config) {
 	s.aggregator = NewAggregator(s.cfg, s.supervisor, s.opts.ExposeManagerTools)
 	s.router = NewRouter(s.cfg, s.supervisor, s.aggregator)
 
-	// Update router with active namespace info
+	// Update aggregator and router with active namespace info
 	s.mu.RLock()
 	activeNsName := s.activeNamespaceName
 	selMethod := s.selectionMethod
 	s.mu.RUnlock()
-	s.router.SetActiveNamespace(activeNsName, selMethod)
+	sep := s.activeSeparator()
+	s.aggregator.SetSeparator(sep)
+	s.router.SetActiveNamespace(activeNsName, selMethod, sep)
 
 	// Restart servers if eager start is configured
 	if s.opts.EagerStart {

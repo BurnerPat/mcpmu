@@ -103,6 +103,11 @@ func (m *NamespaceDetailModel) updateContent() {
 		content.WriteString("\n")
 	}
 
+	// Separator
+	content.WriteString(labelStyle.Render("Separator: "))
+	content.WriteString(infoStyle.Render(m.namespace.GetSeparator()))
+	content.WriteString("\n")
+
 	// Deny by default status
 	content.WriteString(labelStyle.Render("Default Policy: "))
 	if m.namespace.DenyByDefault {

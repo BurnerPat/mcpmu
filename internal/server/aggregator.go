@@ -49,6 +49,9 @@ type Aggregator struct {
 	// Manager tools
 	managerTools       []AggregatedTool
 	exposeManagerTools bool
+
+	// Separator between server name and tool name (default ".")
+	separator string
 }
 
 // NewAggregator creates a new tool aggregator.
@@ -58,9 +61,16 @@ func NewAggregator(cfg *config.Config, supervisor *process.Supervisor, exposeMan
 		supervisor:         supervisor,
 		tools:              make(map[string]AggregatedTool),
 		exposeManagerTools: exposeManagerTools,
+		separator:          ".",
 	}
 	a.managerTools = a.buildManagerTools()
 	return a
+}
+
+// SetSeparator sets the tool name separator and rebuilds manager tools.
+func (a *Aggregator) SetSeparator(sep string) {
+	a.separator = sep
+	a.managerTools = a.buildManagerTools()
 }
 
 // ListTools discovers and returns all tools from the specified servers.
@@ -184,8 +194,8 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 			continue
 		}
 
-		// Qualify tool name: serverName.toolName
-		qualifiedName := serverName + "." + t.Name
+		// Qualify tool name: serverName<sep>toolName
+		qualifiedName := serverName + a.separator + t.Name
 
 		// Prefix description with server name
 		desc := t.Description
@@ -217,14 +227,16 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 }
 
 // ParseToolName extracts serverID and tool name from a qualified tool name.
-func ParseToolName(qualifiedName string) (serverID, toolName string, isManager bool) {
-	// Manager tools have "mcpmu." prefix
-	if strings.HasPrefix(qualifiedName, "mcpmu.") {
+// The separator is the string between server name and tool name (e.g. ".").
+func ParseToolName(qualifiedName, separator string) (serverID, toolName string, isManager bool) {
+	// Manager tools have "mcpmu<sep>" prefix
+	managerPrefix := "mcpmu" + separator
+	if strings.HasPrefix(qualifiedName, managerPrefix) {
 		return "", qualifiedName, true
 	}
 
-	// Regular tools: serverId.toolName
-	parts := strings.SplitN(qualifiedName, ".", 2)
+	// Regular tools: serverId<sep>toolName
+	parts := strings.SplitN(qualifiedName, separator, 2)
 	if len(parts) != 2 {
 		return "", qualifiedName, false
 	}
@@ -233,34 +245,35 @@ func ParseToolName(qualifiedName string) (serverID, toolName string, isManager b
 
 // buildManagerTools creates the mcpmu.* meta-tools.
 func (a *Aggregator) buildManagerTools() []AggregatedTool {
+	sep := a.separator
 	return []AggregatedTool{
 		{
-			Name:        "mcpmu.servers_list",
+			Name:        "mcpmu" + sep + "servers_list",
 			Description: "List all configured MCP servers and their status",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		},
 		{
-			Name:        "mcpmu.servers_start",
+			Name:        "mcpmu" + sep + "servers_start",
 			Description: "Start a specific MCP server by ID",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {"server_id": {"type": "string", "description": "The ID of the server to start"}}, "required": ["server_id"]}`),
 		},
 		{
-			Name:        "mcpmu.servers_stop",
+			Name:        "mcpmu" + sep + "servers_stop",
 			Description: "Stop a specific MCP server by ID",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {"server_id": {"type": "string", "description": "The ID of the server to stop"}}, "required": ["server_id"]}`),
 		},
 		{
-			Name:        "mcpmu.servers_restart",
+			Name:        "mcpmu" + sep + "servers_restart",
 			Description: "Restart a specific MCP server by ID",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {"server_id": {"type": "string", "description": "The ID of the server to restart"}}, "required": ["server_id"]}`),
 		},
 		{
-			Name:        "mcpmu.server_logs",
+			Name:        "mcpmu" + sep + "server_logs",
 			Description: "Get recent log lines from a server's stderr",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {"server_id": {"type": "string", "description": "The ID of the server"}, "lines": {"type": "integer", "description": "Number of lines to return (default: 50)", "default": 50}}, "required": ["server_id"]}`),
 		},
 		{
-			Name:        "mcpmu.namespaces_list",
+			Name:        "mcpmu" + sep + "namespaces_list",
 			Description: "List all namespaces and show which is active",
 			InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		},
