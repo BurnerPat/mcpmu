@@ -173,17 +173,14 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 		return nil, fmt.Errorf("wait for tools: %w", err)
 	}
 
-	// Get disabled tool names from template (if any)
-	disabledTools := a.cfg.GetDisabledToolsForServer(serverName)
-
 	// Get tools from the running server
 	mcpTools := handle.Tools()
 
 	tools := make([]AggregatedTool, 0, len(mcpTools))
 	for _, t := range mcpTools {
-		// Skip tools that are disabled by the template
-		if isToolInList(t.Name, disabledTools) {
-			log.Printf("Tool %s.%s disabled by template, skipping", serverName, t.Name)
+		// Skip tools that are not allowed by the template
+		if !a.cfg.IsToolAllowedByTemplate(serverName, t.Name) {
+			log.Printf("Tool %s.%s denied by template, skipping", serverName, t.Name)
 			continue
 		}
 
@@ -217,16 +214,6 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 	}
 
 	return tools, nil
-}
-
-// isToolInList checks if a tool name is in the given list.
-func isToolInList(name string, list []string) bool {
-	for _, n := range list {
-		if n == name {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseToolName extracts serverID and tool name from a qualified tool name.

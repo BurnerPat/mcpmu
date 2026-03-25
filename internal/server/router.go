@@ -63,9 +63,9 @@ func (r *Router) CallTool(ctx context.Context, qualifiedName string, arguments j
 		}
 	}
 
-	// Check if tool is disabled by template
-	if r.cfg.IsToolDisabledByTemplate(serverName, toolName) {
-		return nil, ErrToolDenied(qualifiedName, "tool is disabled by the server template")
+	// Check if tool is allowed by template
+	if !r.cfg.IsToolAllowedByTemplate(serverName, toolName) {
+		return nil, ErrToolDenied(qualifiedName, "tool is denied by the server template")
 	}
 
 	// Validate server exists and resolve template

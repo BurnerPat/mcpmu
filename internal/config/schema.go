@@ -61,7 +61,7 @@ type ServerConfig struct {
 
 // TemplateConfig defines a reusable server configuration template.
 // Templates allow defining the base MCP server configuration once and reusing
-// it across multiple server definitions. They also support tool blacklisting.
+// it across multiple server definitions. They also support per-tool permissions.
 type TemplateConfig struct {
 	// Description is a human-readable description of the template.
 	Description string `json:"description,omitempty"`
@@ -82,10 +82,14 @@ type TemplateConfig struct {
 	StartupTimeoutSec int `json:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int `json:"tool_timeout_sec,omitempty"`
 
-	// DisabledTools lists tool names that should never be exposed to clients.
-	// Tools in this list are filtered out during aggregation and shown
-	// greyed-out in the TUI.
-	DisabledTools []string `json:"disabledTools,omitempty"`
+	// DenyByDefault when true means tools without an explicit permission
+	// entry are denied. When false (default), unlisted tools are allowed.
+	DenyByDefault bool `json:"denyByDefault,omitempty"`
+
+	// ToolPermissions stores per-tool allow/deny decisions.
+	// Key is the tool name, value is true (allow) or false (deny).
+	// Tools not present in this map fall back to DenyByDefault.
+	ToolPermissions map[string]bool `json:"toolPermissions,omitempty"`
 
 	// TestArgs are extra arguments appended when starting the template as a
 	// test server for tool discovery. This is useful for servers that require
@@ -149,26 +153,23 @@ func (t TemplateConfig) IsHTTP() bool {
 	return t.URL != ""
 }
 
-// IsToolDisabled returns true if the given tool name is in the disabled list.
-func (t TemplateConfig) IsToolDisabled(toolName string) bool {
-	for _, name := range t.DisabledTools {
-		if name == toolName {
-			return true
-		}
+// IsToolAllowed returns whether the given tool is allowed by this template's
+// permission configuration. It checks explicit ToolPermissions first, then
+// falls back to the DenyByDefault setting.
+func (t TemplateConfig) IsToolAllowed(toolName string) bool {
+	if allowed, ok := t.ToolPermissions[toolName]; ok {
+		return allowed
 	}
-	return false
+	return !t.DenyByDefault
 }
 
-// ToServerConfig converts the template to a ServerConfig for test/discovery purposes.
-// TestArgs are appended to Args so that tools can be discovered from servers
-// that require connection-specific parameters.
+// ToServerConfig converts the template to a base ServerConfig.
+// TestArgs are NOT included — use ToTestServerConfig for tool discovery.
 func (t TemplateConfig) ToServerConfig() ServerConfig {
-	args := append([]string{}, t.Args...)
-	args = append(args, t.TestArgs...)
 	return ServerConfig{
 		Kind:              t.Kind,
 		Command:           t.Command,
-		Args:              args,
+		Args:              append([]string{}, t.Args...),
 		Cwd:               t.Cwd,
 		Env:               copyStringMap(t.Env),
 		URL:               t.URL,
@@ -179,6 +180,15 @@ func (t TemplateConfig) ToServerConfig() ServerConfig {
 		StartupTimeoutSec: t.StartupTimeoutSec,
 		ToolTimeoutSec:    t.ToolTimeoutSec,
 	}
+}
+
+// ToTestServerConfig converts the template to a ServerConfig for test/discovery.
+// TestArgs are appended to Args so servers that require connection-specific
+// parameters (e.g. ABAP system details) can be started for tool discovery.
+func (t TemplateConfig) ToTestServerConfig() ServerConfig {
+	srv := t.ToServerConfig()
+	srv.Args = append(srv.Args, t.TestArgs...)
+	return srv
 }
 
 func copyStringMap(m map[string]string) map[string]string {
@@ -542,31 +552,27 @@ func (c *Config) ResolveServer(name string) (ServerConfig, bool) {
 	return resolved, true
 }
 
-// GetDisabledToolsForServer returns the disabled tools list from the server's
-// template, or nil if the server doesn't use a template.
-func (c *Config) GetDisabledToolsForServer(serverName string) []string {
+// IsToolAllowedByTemplate returns whether a tool is allowed by the server's
+// template permission configuration. Returns true if the server has no template.
+func (c *Config) IsToolAllowedByTemplate(serverName, toolName string) bool {
 	srv, ok := c.Servers[serverName]
 	if !ok || srv.Template == "" {
-		return nil
+		return true
 	}
 	tmpl, ok := c.GetTemplate(srv.Template)
 	if !ok {
-		return nil
+		return true
 	}
-	return tmpl.DisabledTools
+	return tmpl.IsToolAllowed(toolName)
 }
 
-// IsToolDisabledByTemplate returns whether a tool is disabled by the server's template.
-func (c *Config) IsToolDisabledByTemplate(serverName, toolName string) bool {
+// GetTemplateForServer returns the template config for a server, if any.
+func (c *Config) GetTemplateForServer(serverName string) (TemplateConfig, bool) {
 	srv, ok := c.Servers[serverName]
 	if !ok || srv.Template == "" {
-		return false
+		return TemplateConfig{}, false
 	}
-	tmpl, ok := c.GetTemplate(srv.Template)
-	if !ok {
-		return false
-	}
-	return tmpl.IsToolDisabled(toolName)
+	return c.GetTemplate(srv.Template)
 }
 
 // GetNamespace returns a namespace by name and whether it was found.

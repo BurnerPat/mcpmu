@@ -343,13 +343,59 @@ func (c *Config) RenameTemplate(oldName, newName string) error {
 	return nil
 }
 
-// SetTemplateDisabledTools updates the disabled tools list for a template.
-func (c *Config) SetTemplateDisabledTools(name string, disabledTools []string) error {
+// SetTemplateToolPermission sets an explicit allow/deny for a tool in a template.
+func (c *Config) SetTemplateToolPermission(name, toolName string, enabled bool) error {
 	tmpl, exists := c.Templates[name]
 	if !exists {
 		return fmt.Errorf("template %q not found", name)
 	}
-	tmpl.DisabledTools = disabledTools
+	if tmpl.ToolPermissions == nil {
+		tmpl.ToolPermissions = make(map[string]bool)
+	}
+	tmpl.ToolPermissions[toolName] = enabled
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// UnsetTemplateToolPermission removes an explicit permission for a tool,
+// reverting it to the template's default (DenyByDefault).
+func (c *Config) UnsetTemplateToolPermission(name, toolName string) error {
+	tmpl, exists := c.Templates[name]
+	if !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	delete(tmpl.ToolPermissions, toolName)
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// SetTemplateDenyByDefault sets the deny-by-default flag for a template.
+func (c *Config) SetTemplateDenyByDefault(name string, deny bool) error {
+	tmpl, exists := c.Templates[name]
+	if !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	tmpl.DenyByDefault = deny
+	c.Templates[name] = tmpl
+	return nil
+}
+
+// ApplyTemplateToolPermissionChanges applies a batch of permission changes and
+// deletions to a template, similar to how namespace permissions work.
+func (c *Config) ApplyTemplateToolPermissionChanges(name string, changes map[string]bool, deletions []string) error {
+	tmpl, exists := c.Templates[name]
+	if !exists {
+		return fmt.Errorf("template %q not found", name)
+	}
+	if tmpl.ToolPermissions == nil {
+		tmpl.ToolPermissions = make(map[string]bool)
+	}
+	for toolName, enabled := range changes {
+		tmpl.ToolPermissions[toolName] = enabled
+	}
+	for _, toolName := range deletions {
+		delete(tmpl.ToolPermissions, toolName)
+	}
 	c.Templates[name] = tmpl
 	return nil
 }

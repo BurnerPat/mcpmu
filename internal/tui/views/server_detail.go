@@ -22,9 +22,9 @@ type ServerDetailModel struct {
 	server         *config.ServerConfig
 	status         *events.ServerStatus
 	tools          []mcp.Tool
-	toolTokens     map[string]int // toolName -> token count
-	toolsFromCache bool           // true when tools were loaded from cache
-	disabledTools  map[string]bool // tools disabled by template
+	toolTokens     map[string]int  // toolName -> token count
+	toolsFromCache bool            // true when tools were loaded from cache
+	disabledTools  map[string]bool // tools not allowed by template
 	viewport       viewport.Model
 	width          int
 	height         int
@@ -53,11 +53,18 @@ func (m *ServerDetailModel) SetServer(name string, srv *config.ServerConfig, sta
 	m.updateContent()
 }
 
-// SetDisabledTools sets the tools that are disabled by the server's template.
-func (m *ServerDetailModel) SetDisabledTools(disabled []string) {
-	m.disabledTools = make(map[string]bool, len(disabled))
-	for _, name := range disabled {
-		m.disabledTools[name] = true
+// SetTemplatePermissions sets the tool deny map based on the server's template.
+// Tools where the template returns IsToolAllowed==false will be shown greyed out.
+func (m *ServerDetailModel) SetTemplatePermissions(tmpl *config.TemplateConfig, toolNames []string) {
+	m.disabledTools = make(map[string]bool)
+	if tmpl == nil {
+		m.updateContent()
+		return
+	}
+	for _, name := range toolNames {
+		if !tmpl.IsToolAllowed(name) {
+			m.disabledTools[name] = true
+		}
 	}
 	m.updateContent()
 }

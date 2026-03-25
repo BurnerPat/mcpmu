@@ -14,10 +14,11 @@ import (
 
 // TemplateItem represents a template in the list.
 type TemplateItem struct {
-	Name          string
-	Config        config.TemplateConfig
-	UsedByServers []string
-	DisabledCount int
+	Name            string
+	Config          config.TemplateConfig
+	UsedByServers   []string
+	DenyByDefault   bool
+	PermissionCount int // number of explicit tool permissions
 }
 
 func (i TemplateItem) Title() string       { return i.Name }
@@ -159,10 +160,13 @@ func (d templateDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 		usageBadge = d.theme.Muted.Render(fmt.Sprintf(" (%d servers)", len(item.UsedByServers)))
 	}
 
-	// Disabled tools count
-	disabledBadge := ""
-	if item.DisabledCount > 0 {
-		disabledBadge = d.theme.Warn.Render(fmt.Sprintf(" %d disabled", item.DisabledCount))
+	// Disabled tools count / deny-by-default badge
+	permBadge := ""
+	if item.DenyByDefault {
+		permBadge = d.theme.Warn.Render(" deny-by-default")
+	}
+	if item.PermissionCount > 0 {
+		permBadge += d.theme.Faint.Render(fmt.Sprintf(" %d perms", item.PermissionCount))
 	}
 
 	// Detail line
@@ -179,7 +183,7 @@ func (d templateDelegate) Render(w io.Writer, m list.Model, index int, listItem 
 		cursor = d.theme.Primary.Render("▸ ")
 	}
 
-	line1 := cursor + name + " " + kindBadge + usageBadge + disabledBadge
+	line1 := cursor + name + " " + kindBadge + usageBadge + permBadge
 	line2 := "    " + d.theme.Faint.Render(detail)
 
 	fmt.Fprintf(w, "%s\n%s", line1, line2)

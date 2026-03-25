@@ -698,7 +698,13 @@ func (m *Model) handleServerListKey(msg tea.KeyMsg) (handled bool, model tea.Mod
 			status := m.serverStatuses[item.Name]
 			tools, toolTokens, fromCache := m.getServerToolsForDetail(item.Name)
 			m.serverDetail.SetServer(item.Name, &item.Config, &status, tools, toolTokens, fromCache)
-			m.serverDetail.SetDisabledTools(m.cfg.GetDisabledToolsForServer(item.Name))
+			if tmpl, ok := m.cfg.GetTemplateForServer(item.Name); ok {
+				var toolNames []string
+				for _, t := range tools {
+					toolNames = append(toolNames, t.Name)
+				}
+				m.serverDetail.SetTemplatePermissions(&tmpl, toolNames)
+			}
 		}
 		return true, m, nil
 
@@ -1127,7 +1133,13 @@ func (m *Model) refreshDetailViewIfShowing(serverID string) {
 	status := m.serverStatuses[serverID]
 	tools, toolTokens, fromCache := m.getServerToolsForDetail(serverID)
 	m.serverDetail.SetServer(serverID, &srv, &status, tools, toolTokens, fromCache)
-	m.serverDetail.SetDisabledTools(m.cfg.GetDisabledToolsForServer(serverID))
+	if tmpl, ok := m.cfg.GetTemplateForServer(serverID); ok {
+		var toolNames []string
+		for _, t := range tools {
+			toolNames = append(toolNames, t.Name)
+		}
+		m.serverDetail.SetTemplatePermissions(&tmpl, toolNames)
+	}
 }
 
 func (m *Model) convertTools(mcpTools []events.McpTool) []mcp.Tool {
@@ -2253,10 +2265,11 @@ func (m *Model) refreshTemplateList() {
 	for i, entry := range entries {
 		usedBy := m.cfg.ServersUsingTemplate(entry.Name)
 		items[i] = views.TemplateItem{
-			Name:          entry.Name,
-			Config:        entry.Config,
-			UsedByServers: usedBy,
-			DisabledCount: len(entry.Config.DisabledTools),
+			Name:            entry.Name,
+			Config:          entry.Config,
+			UsedByServers:   usedBy,
+			DenyByDefault:   entry.Config.DenyByDefault,
+			PermissionCount: len(entry.Config.ToolPermissions),
 		}
 	}
 	m.templateList.SetItems(items)
@@ -2316,8 +2329,8 @@ func (m *Model) handleTemplateDetailKey(msg tea.KeyMsg) (handled bool, model tea
 			if !ok {
 				return true, m, m.toast.ShowError("Template not found")
 			}
-			// Start a temporary test using the template's base config
-			testSrv := tmpl.ToServerConfig()
+			// Start a temporary test using the template's base config (with TestArgs)
+			testSrv := tmpl.ToTestServerConfig()
 			go m.startServer(m.detailTemplateID+"__test", testSrv)
 			return true, m, m.toast.ShowInfo(fmt.Sprintf("Testing template \"%s\"...", m.detailTemplateID))
 		}
@@ -2350,13 +2363,13 @@ func (m *Model) handleTemplateDetailKey(msg tea.KeyMsg) (handled bool, model tea
 // It starts the template as a test server to discover tools.
 func (m *Model) startTemplateToolEditor(tmplName string, tmpl *config.TemplateConfig) (bool, tea.Model, tea.Cmd) {
 	testName := tmplName + "__test"
-	testSrv := tmpl.ToServerConfig()
+	testSrv := tmpl.ToTestServerConfig()
 
 	// Check if already running from a previous test
 	handle := m.supervisor.Get(testName)
 	if handle != nil && handle.IsRunning() {
 		if tools, ok := m.serverTools[testName]; ok && len(tools) > 0 {
-			m.templatePerms.Show(tmplName, tools, tmpl.DisabledTools)
+			m.templatePerms.Show(tmplName, tools, tmpl.ToolPermissions, tmpl.DenyByDefault)
 			return true, m, nil
 		}
 	}
@@ -2442,9 +2455,9 @@ func (m Model) handleTemplateToolPermissionsResult(result views.TemplateToolPerm
 		return m, nil
 	}
 
-	// Update disabled tools
-	if err := m.cfg.SetTemplateDisabledTools(result.TemplateName, result.DisabledTools); err != nil {
-		log.Printf("Failed to update disabled tools: %v", err)
+	// Apply permission changes and deletions
+	if err := m.cfg.ApplyTemplateToolPermissionChanges(result.TemplateName, result.Changes, result.Deletions); err != nil {
+		log.Printf("Failed to update tool permissions: %v", err)
 		return m, m.toast.ShowError(fmt.Sprintf("Failed to update: %v", err))
 	}
 
@@ -2515,7 +2528,7 @@ func (m Model) updateWithTemplatePerms(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if toolEvt.ServerID() == testName {
 					tmpl, ok := m.cfg.GetTemplate(m.templatePerms.GetTemplateName())
 					if ok {
-						m.templatePerms.FinishDiscovery(toolEvt.Tools, tmpl.DisabledTools)
+						m.templatePerms.FinishDiscovery(toolEvt.Tools, tmpl.ToolPermissions, tmpl.DenyByDefault)
 					}
 				}
 			}

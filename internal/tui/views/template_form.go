@@ -48,6 +48,7 @@ type TemplateFormModel struct {
 	oauthScopes    string
 	startupTimeout string
 	toolTimeout    string
+	denyByDefault  bool
 
 	// Initial values for dirty checking
 	initialName           string
@@ -63,6 +64,7 @@ type TemplateFormModel struct {
 	initialOAuthScopes    string
 	initialStartupTimeout string
 	initialToolTimeout    string
+	initialDenyByDefault  bool
 
 	showConfirmDiscard bool
 	escKey             key.Binding
@@ -99,6 +101,7 @@ func (m *TemplateFormModel) ShowAdd() tea.Cmd {
 	m.oauthScopes = ""
 	m.startupTimeout = ""
 	m.toolTimeout = ""
+	m.denyByDefault = false
 	m.saveInitialValues()
 	m.buildForm()
 	return m.form.Init()
@@ -147,6 +150,7 @@ func (m *TemplateFormModel) ShowEdit(name string, tmpl config.TemplateConfig) te
 	} else {
 		m.toolTimeout = ""
 	}
+	m.denyByDefault = tmpl.DenyByDefault
 
 	m.saveInitialValues()
 	m.buildForm()
@@ -167,6 +171,7 @@ func (m *TemplateFormModel) saveInitialValues() {
 	m.initialOAuthScopes = m.oauthScopes
 	m.initialStartupTimeout = m.startupTimeout
 	m.initialToolTimeout = m.toolTimeout
+	m.initialDenyByDefault = m.denyByDefault
 }
 
 func (m *TemplateFormModel) isDirty() bool {
@@ -182,7 +187,8 @@ func (m *TemplateFormModel) isDirty() bool {
 		m.oauthCBPort != m.initialOAuthCBPort ||
 		m.oauthScopes != m.initialOAuthScopes ||
 		m.startupTimeout != m.initialStartupTimeout ||
-		m.toolTimeout != m.initialToolTimeout
+		m.toolTimeout != m.initialToolTimeout ||
+		m.denyByDefault != m.initialDenyByDefault
 }
 
 func (m *TemplateFormModel) buildForm() {
@@ -191,6 +197,8 @@ func (m *TemplateFormModel) buildForm() {
 	keymap.Input.Next.SetKeys("down", "tab")
 	keymap.Text.Prev.SetKeys("up", "shift+tab")
 	keymap.Text.Next.SetKeys("down", "tab")
+	keymap.Confirm.Prev.SetKeys("up", "shift+tab")
+	keymap.Confirm.Next.SetKeys("down", "tab")
 
 	formTheme := huh.ThemeBase16()
 	orange := lipgloss.AdaptiveColor{Light: "#EA580C", Dark: "#FB923C"}
@@ -283,6 +291,10 @@ func (m *TemplateFormModel) buildForm() {
 					}
 					return nil
 				}),
+			huh.NewConfirm().
+				Title("Deny by Default").
+				Description("Deny tools unless explicitly allowed").
+				Value(&m.denyByDefault),
 		).Title("Advanced"),
 	).WithTheme(formTheme).
 		WithWidth(60).
@@ -333,6 +345,7 @@ func (m *TemplateFormModel) buildTemplateConfig() config.TemplateConfig {
 	tmpl.Cwd = strings.TrimSpace(m.cwd)
 	tmpl.Env = parseEnvVars(strings.TrimSpace(m.env))
 	tmpl.TestArgs = parseArgs(strings.TrimSpace(m.testArgs))
+	tmpl.DenyByDefault = m.denyByDefault
 
 	if s := strings.TrimSpace(m.startupTimeout); s != "" {
 		if n, err := strconv.Atoi(s); err == nil {

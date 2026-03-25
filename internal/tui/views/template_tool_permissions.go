@@ -14,23 +14,27 @@ import (
 
 // TemplateToolPermissionsResult is sent when the user finishes editing template tool permissions.
 type TemplateToolPermissionsResult struct {
-	TemplateName  string
-	DisabledTools []string
-	Submitted     bool
+	TemplateName string
+	// Changes contains permission changes (toolName -> enabled).
+	Changes map[string]bool
+	// Deletions contains tool names whose explicit permission should be removed
+	// (revert to template default).
+	Deletions []string
+	Submitted bool
 }
 
 // templateToolItem represents a tool in the template tool permission editor.
 type templateToolItem struct {
 	toolName    string
 	description string
-	enabled     bool // true = tool is enabled (not in disabled list)
+	enabled     bool // resolved enabled state for display
 }
 
 func (i templateToolItem) Title() string       { return i.toolName }
 func (i templateToolItem) Description() string { return i.description }
 func (i templateToolItem) FilterValue() string { return i.toolName }
 
-// TemplateToolPermissionsModel is a modal for editing template disabled tools.
+// TemplateToolPermissionsModel is a modal for editing template tool permissions.
 type TemplateToolPermissionsModel struct {
 	theme        theme.Theme
 	visible      bool
@@ -40,8 +44,10 @@ type TemplateToolPermissionsModel struct {
 	templateName string
 	discovering  bool
 
-	// Track enabled state per tool
-	toolStates map[string]bool // toolName -> enabled
+	// Permission state (mirrors the namespace pattern)
+	originalPerms map[string]bool // toolName -> enabled (explicit permissions at open time)
+	currentPerms  map[string]bool // toolName -> enabled (current working copy)
+	denyByDefault bool            // template-level default
 
 	escKey   key.Binding
 	enterKey key.Binding
@@ -50,9 +56,9 @@ type TemplateToolPermissionsModel struct {
 
 // NewTemplateToolPermissions creates a new template tool permissions editor.
 func NewTemplateToolPermissions(th theme.Theme) TemplateToolPermissionsModel {
-	delegate := newTemplateToolDelegate(th, make(map[string]bool))
+	delegate := newTemplateToolDelegate(th, make(map[string]bool), false)
 	l := list.New([]list.Item{}, delegate, 0, 0)
-	l.Title = "Template Tool Filter"
+	l.Title = "Template Tool Permissions"
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
@@ -61,9 +67,10 @@ func NewTemplateToolPermissions(th theme.Theme) TemplateToolPermissionsModel {
 	l.FilterInput.Cursor.Style = th.Primary
 
 	return TemplateToolPermissionsModel{
-		theme:      th,
-		list:       l,
-		toolStates: make(map[string]bool),
+		theme:         th,
+		list:          l,
+		originalPerms: make(map[string]bool),
+		currentPerms:  make(map[string]bool),
 		escKey: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "cancel"),
@@ -79,32 +86,27 @@ func NewTemplateToolPermissions(th theme.Theme) TemplateToolPermissionsModel {
 	}
 }
 
+// defaultAllowed returns whether tools are allowed by default in this template.
+func (m *TemplateToolPermissionsModel) defaultAllowed() bool {
+	return !m.denyByDefault
+}
+
 // Show displays the editor with discovered tools.
-func (m *TemplateToolPermissionsModel) Show(templateName string, tools []events.McpTool, disabledTools []string) {
+func (m *TemplateToolPermissionsModel) Show(templateName string, tools []events.McpTool, permissions map[string]bool, denyByDefault bool) {
 	m.visible = true
 	m.discovering = false
 	m.templateName = templateName
-	m.toolStates = make(map[string]bool)
+	m.denyByDefault = denyByDefault
+	m.originalPerms = make(map[string]bool)
+	m.currentPerms = make(map[string]bool)
 
-	// Build disabled tool lookup
-	disabledSet := make(map[string]bool)
-	for _, name := range disabledTools {
-		disabledSet[name] = true
+	// Copy explicit permissions
+	for name, enabled := range permissions {
+		m.originalPerms[name] = enabled
+		m.currentPerms[name] = enabled
 	}
 
-	var items []list.Item
-	for _, tool := range tools {
-		enabled := !disabledSet[tool.Name]
-		m.toolStates[tool.Name] = enabled
-		items = append(items, templateToolItem{
-			toolName:    tool.Name,
-			description: tool.Description,
-			enabled:     enabled,
-		})
-	}
-
-	m.list.SetItems(items)
-	m.list.SetDelegate(newTemplateToolDelegate(m.theme, m.toolStates))
+	m.populateList(tools)
 }
 
 // ShowDiscovering shows the discovering tools state.
@@ -112,23 +114,32 @@ func (m *TemplateToolPermissionsModel) ShowDiscovering(templateName string) {
 	m.visible = true
 	m.discovering = true
 	m.templateName = templateName
-	m.toolStates = make(map[string]bool)
+	m.originalPerms = make(map[string]bool)
+	m.currentPerms = make(map[string]bool)
 	m.list.SetItems([]list.Item{})
 }
 
 // FinishDiscovery transitions from discovery to editing mode.
-func (m *TemplateToolPermissionsModel) FinishDiscovery(tools []events.McpTool, disabledTools []string) {
+func (m *TemplateToolPermissionsModel) FinishDiscovery(tools []events.McpTool, permissions map[string]bool, denyByDefault bool) {
 	m.discovering = false
+	m.denyByDefault = denyByDefault
 
-	disabledSet := make(map[string]bool)
-	for _, name := range disabledTools {
-		disabledSet[name] = true
+	// Copy explicit permissions
+	for name, enabled := range permissions {
+		m.originalPerms[name] = enabled
+		m.currentPerms[name] = enabled
 	}
 
+	m.populateList(tools)
+}
+
+func (m *TemplateToolPermissionsModel) populateList(tools []events.McpTool) {
 	var items []list.Item
 	for _, tool := range tools {
-		enabled := !disabledSet[tool.Name]
-		m.toolStates[tool.Name] = enabled
+		enabled, hasExplicit := m.currentPerms[tool.Name]
+		if !hasExplicit {
+			enabled = m.defaultAllowed()
+		}
 		items = append(items, templateToolItem{
 			toolName:    tool.Name,
 			description: tool.Description,
@@ -137,7 +148,7 @@ func (m *TemplateToolPermissionsModel) FinishDiscovery(tools []events.McpTool, d
 	}
 
 	m.list.SetItems(items)
-	m.list.SetDelegate(newTemplateToolDelegate(m.theme, m.toolStates))
+	m.list.SetDelegate(newTemplateToolDelegate(m.theme, m.currentPerms, m.denyByDefault))
 }
 
 // Hide hides the editor.
@@ -221,27 +232,47 @@ func (m *TemplateToolPermissionsModel) Update(msg tea.Msg) tea.Cmd {
 
 		case key.Matches(msg, m.enterKey):
 			m.visible = false
-			// Build disabled tools list from current state
-			var disabled []string
-			for name, enabled := range m.toolStates {
-				if !enabled {
-					disabled = append(disabled, name)
+			// Calculate changes and deletions (same pattern as namespace permissions)
+			changes := make(map[string]bool)
+			var deletions []string
+
+			for toolName, enabled := range m.currentPerms {
+				orig, hadOrig := m.originalPerms[toolName]
+				if !hadOrig || orig != enabled {
+					changes[toolName] = enabled
 				}
 			}
+
+			for toolName := range m.originalPerms {
+				if _, stillExists := m.currentPerms[toolName]; !stillExists {
+					deletions = append(deletions, toolName)
+				}
+			}
+
 			return func() tea.Msg {
 				return TemplateToolPermissionsResult{
-					TemplateName:  m.templateName,
-					DisabledTools: disabled,
-					Submitted:     true,
+					TemplateName: m.templateName,
+					Changes:      changes,
+					Deletions:    deletions,
+					Submitted:    true,
 				}
 			}
 
 		case key.Matches(msg, m.spaceKey):
 			if item := m.list.SelectedItem(); item != nil {
 				ti := item.(templateToolItem)
-				current := m.toolStates[ti.toolName]
-				m.toolStates[ti.toolName] = !current
-				m.list.SetDelegate(newTemplateToolDelegate(m.theme, m.toolStates))
+				current, has := m.currentPerms[ti.toolName]
+				if !has {
+					current = m.defaultAllowed()
+				}
+				newValue := !current
+				// If new value matches default, remove explicit permission
+				if newValue == m.defaultAllowed() {
+					delete(m.currentPerms, ti.toolName)
+				} else {
+					m.currentPerms[ti.toolName] = newValue
+				}
+				m.list.SetDelegate(newTemplateToolDelegate(m.theme, m.currentPerms, m.denyByDefault))
 			}
 			return nil
 		}
@@ -268,16 +299,25 @@ func (m TemplateToolPermissionsModel) RenderOverlay(base string, width, height i
 		content = m.theme.Primary.Render("Discovering tools...") +
 			"\n\n" + m.theme.Faint.Render("Starting template server to find available tools.\nPress Esc to cancel.")
 	} else {
-		enabledCount := 0
-		disabledCount := 0
-		for _, enabled := range m.toolStates {
+		allowedCount := 0
+		deniedCount := 0
+		for _, item := range m.list.Items() {
+			ti := item.(templateToolItem)
+			enabled, has := m.currentPerms[ti.toolName]
+			if !has {
+				enabled = m.defaultAllowed()
+			}
 			if enabled {
-				enabledCount++
+				allowedCount++
 			} else {
-				disabledCount++
+				deniedCount++
 			}
 		}
-		header := fmt.Sprintf("Template Tool Filter — %d enabled, %d disabled", enabledCount, disabledCount)
+		defaultLabel := "allow"
+		if m.denyByDefault {
+			defaultLabel = "deny"
+		}
+		header := fmt.Sprintf("Template Tool Permissions — %d allowed, %d denied (default: %s)", allowedCount, deniedCount, defaultLabel)
 		content = m.theme.Title.Render(header) + "\n" +
 			m.theme.Faint.Render("space:toggle  /:filter  enter:save  esc:cancel") +
 			"\n\n" + m.list.View()
@@ -301,12 +341,13 @@ func (m TemplateToolPermissionsModel) RenderOverlay(base string, width, height i
 
 // templateToolDelegate renders template tool items.
 type templateToolDelegate struct {
-	theme      theme.Theme
-	toolStates map[string]bool
+	theme         theme.Theme
+	currentPerms  map[string]bool
+	denyByDefault bool
 }
 
-func newTemplateToolDelegate(th theme.Theme, states map[string]bool) templateToolDelegate {
-	return templateToolDelegate{theme: th, toolStates: states}
+func newTemplateToolDelegate(th theme.Theme, perms map[string]bool, denyByDefault bool) templateToolDelegate {
+	return templateToolDelegate{theme: th, currentPerms: perms, denyByDefault: denyByDefault}
 }
 
 func (d templateToolDelegate) Height() int                             { return 2 }
@@ -320,7 +361,12 @@ func (d templateToolDelegate) Render(w io.Writer, m list.Model, index int, listI
 	}
 
 	isSelected := index == m.Index()
-	enabled := d.toolStates[item.toolName]
+
+	// Resolve effective enabled state
+	enabled, hasExplicit := d.currentPerms[item.toolName]
+	if !hasExplicit {
+		enabled = !d.denyByDefault
+	}
 
 	// Status icon
 	var icon string
@@ -337,12 +383,18 @@ func (d templateToolDelegate) Render(w io.Writer, m list.Model, index int, listI
 		nameStyle = d.theme.Faint
 	}
 
+	// Show marker for explicit vs default
+	marker := " "
+	if hasExplicit {
+		marker = "•"
+	}
+
 	cursor := "  "
 	if isSelected {
 		cursor = d.theme.Primary.Render("▸ ")
 	}
 
-	line1 := cursor + icon + " " + nameStyle.Render(item.toolName)
+	line1 := cursor + icon + marker + nameStyle.Render(item.toolName)
 
 	desc := item.description
 	if len(desc) > 55 {

@@ -161,23 +161,35 @@ func (m *TemplateDetailModel) updateContent() {
 		}
 	}
 
-	// Disabled tools
+	// Tool permissions
 	content.WriteString("\n")
-	content.WriteString(m.theme.Title.Render(fmt.Sprintf("Disabled Tools (%d)", len(m.template.DisabledTools))))
+	defaultLabel := "allow"
+	if m.template.DenyByDefault {
+		defaultLabel = "deny"
+	}
+	content.WriteString(m.theme.Title.Render(fmt.Sprintf("Tool Permissions (default: %s)", defaultLabel)))
 	content.WriteString("\n")
-	if len(m.template.DisabledTools) == 0 {
-		content.WriteString(m.theme.Faint.Render("  All tools enabled"))
+	if len(m.template.ToolPermissions) == 0 {
+		if m.template.DenyByDefault {
+			content.WriteString(m.theme.Faint.Render("  All tools denied by default (none explicitly allowed)"))
+		} else {
+			content.WriteString(m.theme.Faint.Render("  All tools allowed (no explicit overrides)"))
+		}
 		content.WriteString("\n")
 	} else {
-		for _, tool := range m.template.DisabledTools {
+		for tool, allowed := range m.template.ToolPermissions {
 			content.WriteString("  ")
-			content.WriteString(m.theme.Danger.Render("✗ " + tool))
+			if allowed {
+				content.WriteString(m.theme.Success.Render("✓ " + tool))
+			} else {
+				content.WriteString(m.theme.Danger.Render("✗ " + tool))
+			}
 			content.WriteString("\n")
 		}
 	}
 
 	content.WriteString("\n")
-	content.WriteString(m.theme.Faint.Render("Press 't' to test, 'p' to edit tool filter, 'e' to edit"))
+	content.WriteString(m.theme.Faint.Render("Press 't' to test, 'p' to edit tool permissions, 'e' to edit"))
 
 	m.viewport.SetContent(content.String())
 }

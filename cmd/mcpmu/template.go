@@ -231,9 +231,13 @@ func runTemplateList(cmd *cobra.Command, args []string) error {
 			detail = e.Config.URL
 		}
 		usedBy := cfg.ServersUsingTemplate(e.Name)
-		disabledCount := len(e.Config.DisabledTools)
-		fmt.Printf("  %-20s  %s  %s  (used by %d servers, %d disabled tools)\n",
-			e.Name, kind, detail, len(usedBy), disabledCount)
+		permCount := len(e.Config.ToolPermissions)
+		defaultLabel := "allow"
+		if e.Config.DenyByDefault {
+			defaultLabel = "deny"
+		}
+		fmt.Printf("  %-20s  %s  %s  (used by %d servers, %d perms, default: %s)\n",
+			e.Name, kind, detail, len(usedBy), permCount, defaultLabel)
 	}
 	return nil
 }
