@@ -425,6 +425,11 @@ func (c *Config) AddNamespace(name string, ns NamespaceConfig) error {
 		return fmt.Errorf("namespace %q already exists", name)
 	}
 
+	// Validate separator against assigned server names
+	if err := ValidateSeparator(ns.Separator, ns.ServerIDs); err != nil {
+		return err
+	}
+
 	// Initialize ServerIDs if nil
 	if ns.ServerIDs == nil {
 		ns.ServerIDs = []string{}
@@ -438,6 +443,10 @@ func (c *Config) AddNamespace(name string, ns NamespaceConfig) error {
 func (c *Config) UpdateNamespace(name string, ns NamespaceConfig) error {
 	if _, exists := c.Namespaces[name]; !exists {
 		return fmt.Errorf("namespace %q not found", name)
+	}
+	// Validate separator against assigned server names
+	if err := ValidateSeparator(ns.Separator, ns.ServerIDs); err != nil {
+		return err
 	}
 	c.Namespaces[name] = ns
 	return nil
@@ -551,6 +560,12 @@ func (c *Config) AssignServerToNamespace(namespaceName, serverName string) error
 	// Check server exists
 	if _, ok := c.GetServer(serverName); !ok {
 		return fmt.Errorf("server %q not found", serverName)
+	}
+
+	// Validate that the server name doesn't contain the namespace separator
+	sep := ns.GetSeparator()
+	if sep != "." && strings.Contains(serverName, sep) {
+		return fmt.Errorf("server name %q contains the namespace separator %q", serverName, sep)
 	}
 
 	// Check if already assigned

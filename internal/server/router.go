@@ -25,6 +25,7 @@ type Router struct {
 
 	// Active namespace info (set after initialize)
 	activeNamespaceName string
+	activeServerNames   []string
 	selectionMethod     SelectionMethod
 
 	// Separator between server name and tool name (synced from aggregator)
@@ -42,10 +43,11 @@ func NewRouter(cfg *config.Config, supervisor *process.Supervisor, aggregator *A
 }
 
 // SetActiveNamespace sets the active namespace info for the router.
-func (r *Router) SetActiveNamespace(namespaceName string, selection SelectionMethod, separator string) {
+func (r *Router) SetActiveNamespace(namespaceName string, selection SelectionMethod, separator string, serverNames []string) {
 	r.activeNamespaceName = namespaceName
 	r.selectionMethod = selection
 	r.separator = separator
+	r.activeServerNames = serverNames
 }
 
 // CallTool routes a tool call to the appropriate server and returns the result.
@@ -53,7 +55,7 @@ func (r *Router) CallTool(ctx context.Context, qualifiedName string, arguments j
 	log.Printf("CallTool: %s", qualifiedName)
 
 	// Parse the tool name
-	serverName, toolName, isManager := ParseToolName(qualifiedName, r.separator)
+	serverName, toolName, isManager := ParseToolName(qualifiedName, r.separator, r.activeServerNames)
 
 	// Handle manager tools (always allowed, no permission check)
 	if isManager {

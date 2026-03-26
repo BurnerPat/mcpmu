@@ -262,6 +262,23 @@ func (ns NamespaceConfig) GetSeparator() string {
 	return ns.Separator
 }
 
+// ValidateSeparator checks that the separator does not conflict with any of the
+// given server names (i.e. no server name contains the separator).
+func ValidateSeparator(separator string, serverNames []string) error {
+	if separator == "" {
+		return nil // will default to "."
+	}
+	if strings.TrimSpace(separator) == "" {
+		return errors.New("separator cannot be whitespace-only")
+	}
+	for _, name := range serverNames {
+		if strings.Contains(name, separator) {
+			return fmt.Errorf("separator %q conflicts with server name %q (name contains the separator)", separator, name)
+		}
+	}
+	return nil
+}
+
 // NamespaceEntry pairs a namespace name with its configuration.
 // Used for iteration when the name is needed.
 type NamespaceEntry struct {

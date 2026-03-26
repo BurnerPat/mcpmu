@@ -580,26 +580,32 @@ func TestServer_NamespaceSelection_ExplicitNamespace(t *testing.T) {
 
 func TestParseToolName(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		sep        string
-		wantServer string
-		wantTool   string
-		wantMgr    bool
+		name         string
+		input        string
+		sep          string
+		knownServers []string
+		wantServer   string
+		wantTool     string
+		wantMgr      bool
 	}{
-		{"manager tool", "mcpmu.servers_list", ".", "", "mcpmu.servers_list", true},
-		{"regular tool", "filesystem.read_file", ".", "filesystem", "read_file", false},
-		{"no dot", "tool_name", ".", "", "tool_name", false},
-		{"empty", "", ".", "", "", false},
-		{"custom sep manager", "mcpmu-servers_list", "-", "", "mcpmu-servers_list", true},
-		{"custom sep regular", "filesystem-read_file", "-", "filesystem", "read_file", false},
-		{"custom sep no match", "tool_name", "-", "", "tool_name", false},
-		{"double colon sep", "filesystem::read_file", "::", "filesystem", "read_file", false},
+		{"manager tool", "mcpmu.servers_list", ".", nil, "", "mcpmu.servers_list", true},
+		{"regular tool", "filesystem.read_file", ".", nil, "filesystem", "read_file", false},
+		{"no dot", "tool_name", ".", nil, "", "tool_name", false},
+		{"empty", "", ".", nil, "", "", false},
+		{"custom sep manager", "mcpmu-servers_list", "-", nil, "", "mcpmu-servers_list", true},
+		{"custom sep regular", "filesystem-read_file", "-", nil, "filesystem", "read_file", false},
+		{"custom sep no match", "tool_name", "-", nil, "", "tool_name", false},
+		{"double colon sep", "filesystem::read_file", "::", nil, "filesystem", "read_file", false},
+		// Known servers resolve ambiguity when separator appears in server name
+		{"ambiguous sep with known", "abap-dev-read_file", "-", []string{"abap-dev", "abap"}, "abap-dev", "read_file", false},
+		{"ambiguous sep longest match", "abap-dev-us-read_file", "-", []string{"abap-dev", "abap-dev-us"}, "abap-dev-us", "read_file", false},
+		{"known servers no ambiguity", "fs-read_file", "-", []string{"fs", "other"}, "fs", "read_file", false},
+		{"known servers no match falls back", "unknown-read_file", "-", []string{"fs"}, "unknown", "read_file", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server, tool, isMgr := ParseToolName(tt.input, tt.sep)
+			server, tool, isMgr := ParseToolName(tt.input, tt.sep, tt.knownServers)
 			if server != tt.wantServer {
 				t.Errorf("server = %q, want %q", server, tt.wantServer)
 			}

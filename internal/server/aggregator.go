@@ -228,14 +228,31 @@ func (a *Aggregator) discoverServerTools(ctx context.Context, serverName string)
 
 // ParseToolName extracts serverID and tool name from a qualified tool name.
 // The separator is the string between server name and tool name (e.g. ".").
-func ParseToolName(qualifiedName, separator string) (serverID, toolName string, isManager bool) {
+// knownServers is an optional list of valid server names to resolve ambiguity
+// when the separator appears inside a server name (e.g. "abap-dev" with sep "-").
+func ParseToolName(qualifiedName, separator string, knownServers []string) (serverID, toolName string, isManager bool) {
 	// Manager tools have "mcpmu<sep>" prefix
 	managerPrefix := "mcpmu" + separator
 	if strings.HasPrefix(qualifiedName, managerPrefix) {
 		return "", qualifiedName, true
 	}
 
-	// Regular tools: serverId<sep>toolName
+	// Try known servers first (longest match wins to handle ambiguity).
+	// e.g. with sep "-": "abap-dev-read_file" must match "abap-dev", not "abap".
+	if len(knownServers) > 0 {
+		bestMatch := ""
+		for _, srv := range knownServers {
+			prefix := srv + separator
+			if strings.HasPrefix(qualifiedName, prefix) && len(srv) > len(bestMatch) {
+				bestMatch = srv
+			}
+		}
+		if bestMatch != "" {
+			return bestMatch, qualifiedName[len(bestMatch)+len(separator):], false
+		}
+	}
+
+	// Fallback: split on first separator occurrence
 	parts := strings.SplitN(qualifiedName, separator, 2)
 	if len(parts) != 2 {
 		return "", qualifiedName, false

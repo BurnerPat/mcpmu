@@ -277,7 +277,7 @@ func (s *Server) handleInitialize(ctx context.Context, params json.RawMessage) (
 	// Update aggregator and router with active namespace info
 	sep := s.activeSeparator()
 	s.aggregator.SetSeparator(sep)
-	s.router.SetActiveNamespace(s.activeNamespaceName, s.selectionMethod, sep)
+	s.router.SetActiveNamespace(s.activeNamespaceName, s.selectionMethod, sep, s.activeServerNames)
 
 	s.initialized = true
 
@@ -334,7 +334,7 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *RPCError) {
 		sep := s.activeSeparator()
 		filtered := make([]AggregatedTool, 0, len(tools))
 		for _, tool := range tools {
-			serverName, toolName, isManager := ParseToolName(tool.Name, sep)
+			serverName, toolName, isManager := ParseToolName(tool.Name, sep, activeServerNames)
 			// Manager tools are always shown
 			if isManager {
 				filtered = append(filtered, tool)
@@ -437,7 +437,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	// Parse tool name to check namespace enforcement
-	serverName, _, isManager := ParseToolName(req.Name, s.activeSeparator())
+	serverName, _, isManager := ParseToolName(req.Name, s.activeSeparator(), activeServerNames)
 
 	// Manager tools are always allowed
 	if !isManager && serverName != "" {
@@ -721,11 +721,12 @@ func (s *Server) applyReload(ctx context.Context, newCfg *config.Config) {
 	// Update aggregator and router with active namespace info
 	s.mu.RLock()
 	activeNsName := s.activeNamespaceName
+	activeNames := s.activeServerNames
 	selMethod := s.selectionMethod
 	s.mu.RUnlock()
 	sep := s.activeSeparator()
 	s.aggregator.SetSeparator(sep)
-	s.router.SetActiveNamespace(activeNsName, selMethod, sep)
+	s.router.SetActiveNamespace(activeNsName, selMethod, sep, activeNames)
 
 	// Restart servers if eager start is configured
 	if s.opts.EagerStart {
